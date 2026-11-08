@@ -1,6 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { Idea } from '../types'
+
 // A side shelf: the person parks ideas while Claude works (no model turn),
 // edits or deletes them, then sends the whole list to Claude with one press.
 
@@ -19,13 +21,22 @@ const openPane = async ($: EngineInterface, focus = false): Promise<void> => {
   })
 }
 
+// Redraws the pane; a pane that fails to open never costs an idea.
+const redraw = async ($: EngineInterface): Promise<void> => {
+  try {
+    await openPane($)
+  } catch {
+    // Nothing to do: the shelf itself is unchanged.
+  }
+}
+
 const clean = (raw: string): string => raw.trim().slice(0, 1000)
 
 const addIdea = async ($: EngineInterface, raw: string): Promise<void> => {
   const text = clean(raw)
   if (text === '') return
-  const id = await read($, nextId)
-  await update($, nextId, n => n + 1)
+  // update() writes atomically and resolves what it wrote, so two ideas at once get two ids.
+  const id = (await update($, nextId, n => n + 1)) - 1
   await update($, ideas, list => [...list, { id, text }].slice(-200))
   await openPane($)
 }
@@ -45,23 +56,32 @@ const removeIdea = async ($: EngineInterface, id: number): Promise<void> => {
 
 // Send empties the shelf: the list now lives in the chat. If the prompt does
 // not enter (a hook dropped it, or it failed), the ideas go back on the shelf.
+// The list is taken off the shelf in one atomic update, so two sends at once
+// never send the same idea twice, and an idea parked meanwhile stays.
 const sendAll = async ($: EngineInterface): Promise<void> => {
-  const list = await read($, ideas)
+  let list: Idea[] = []
+  await update($, ideas, current => {
+    list = current
+    return []
+  })
   if (list.length === 0) return
-  await update($, ideas, () => [])
-  await update($, editing, () => null)
-  await openPane($)
-  const lines = list.map((i, n) => `${n + 1}. ${i.text}`)
-  let result: Awaited<ReturnType<typeof $.prompt.submit>> | undefined
+  let delivered = false
   try {
-    result = await $.prompt.submit({ text: ['Ideas I parked on my idea shelf while we worked:', ...lines].join('\n') })
-  } catch {
-    result = undefined
+    await update($, editing, () => null)
+    await redraw($)
+    const lines = list.map((i, n) => `${n + 1}. ${i.text}`)
+    let result: Awaited<ReturnType<typeof $.prompt.submit>> | undefined
+    try {
+      result = await $.prompt.submit({ text: ['Ideas I parked on my idea shelf while we worked:', ...lines].join('\n') })
+    } catch {
+      result = undefined
+    }
+    delivered = result !== undefined && result.drop === undefined
+  } finally {
+    if (!delivered) await update($, ideas, rest => [...list, ...rest].slice(-200))
+    await redraw($)
   }
-  if (result !== undefined && result.drop === undefined) return
-  await update($, ideas, rest => [...list, ...rest].slice(-200))
-  await openPane($)
-  $.ui.toast('Ideas not delivered. They are back on the shelf.')
+  if (!delivered) $.ui.toast('Ideas not delivered. They are back on the shelf.')
 }
 
 export const register: Register = on => {
@@ -81,7 +101,7 @@ export const register: Register = on => {
       const count = (await read($, ideas)).length
       if (count === 0) return { text: 'No ideas to send.' }
       // Not awaited: a prompt from a mod waits until Claude's turn ends.
-      void sendAll($)
+      void sendAll($).catch(() => undefined)
       return { text: `Sending ${count} idea${count === 1 ? '' : 's'} to Claude.` }
     }
     if (arg !== '') {

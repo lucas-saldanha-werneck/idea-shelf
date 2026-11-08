@@ -76,3 +76,61 @@ test('/ideas parks an idea, and /ideas send sends the list', async ($, on) => {
   expect(await delivered).toBe('Ideas I parked on my idea shelf while we worked:\n1. rename the config file\n2. add a --dry-run flag')
   expect((await $.command.run(ideasCommand(''))).text).toBe('Idea shelf opened.')
 })
+
+test('two sends at once submit the ideas only once', async ($, on) => {
+  const sent: string[] = []
+  let release: () => void = () => {}
+  const gate = new Promise<void>(r => (release = r))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    await gate
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  await ui.input({ key: 'new', text: 'add dark mode' })
+  const one = ui.press({ key: 'send' })
+  const two = ui.press({ key: 'send' }).catch(() => undefined)
+  for (let i = 0; i < 1000 && sent.length === 0; i++) await Promise.resolve()
+  release()
+  await Promise.all([one, two])
+  expect(sent.length).toBe(1)
+  await ui.unmount()
+})
+
+test('a pane that fails to open during send does not lose the ideas', async ($, on) => {
+  let paneBroken = false
+  const sent: string[] = []
+  on('ui.open', async () => {
+    if (paneBroken) throw new Error('pane failed')
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  await ui.input({ key: 'new', text: 'try a smaller font' })
+  paneBroken = true
+  await ui.press({ key: 'send' }).catch(() => undefined)
+  paneBroken = false
+  // Either the ideas reached Claude, or they are still on the shelf.
+  const onShelf = (await ui.find({ type: 'Text', text: /try a smaller font/ })) !== undefined
+  expect(onShelf || sent.some(t => t.includes('try a smaller font'))).toBe(true)
+  await ui.unmount()
+})
+
+test('ideas parked at the same time get different ids', async ($, on) => {
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  await Promise.all([
+    $.command.run(ideasCommand('first')),
+    $.command.run(ideasCommand('second')),
+  ])
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'del-1' })).toBeDefined()
+  expect(await ui.find({ key: 'del-2' })).toBeDefined()
+  await ui.press({ key: 'del-1' })
+  expect(await ui.find({ type: 'Text', text: /second/ })).toBeDefined()
+  await ui.unmount()
+})

@@ -1,6 +1,6 @@
 {
   "name": "idea-shelf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A side shelf for ideas that come up mid-task: jot them down without sidetracking Claude, then send the list in one click.",
   "author": {
     "name": "Lucas Saldanha Werneck",
