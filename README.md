@@ -94,6 +94,10 @@ From a shell, the same commands work with `claude plugin` in place of `/plugin`.
   "Type /ideas your idea to park one." and only the Delete and Send buttons.
 - Tests: `claude plugin test .` and `claude plugin validate .`.
 
+## Credits
+
+The idea comes from the "Idea Shelf" mod in the AI LABS video [Claude Mods Are Insane... You Need To Try These Right Now](https://www.youtube.com/watch?v=ERNqRK6sMJY&t=532) (08:52, 9 Oct 2026). This code was written separately with Claude Code.
+
 ## License
 
 MIT. See `LICENSE`.
