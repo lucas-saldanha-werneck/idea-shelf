@@ -155,9 +155,13 @@ From a shell, the same commands work with `claude plugin` in place of `/plugin`.
 - Ideas are saved in Claude Code's per-plugin store, not in a file you can edit.
 - The waiting mark is not saved: an app reload while ideas are waiting brings them back as normal
   ideas, so if the message had already entered, you may see them again and delete them by hand.
-- The tests model a `/clear` as the docs describe it and as a real terminal test of the sibling
-  mods showed it: session end, new id, no session start, session state gone. idea-shelf itself has
-  not been tried with a real `/clear` yet.
+- A real `/clear` was tried in a terminal session (Claude Code 2.1.319, with side-stack and the
+  other mods loaded): the ideas stayed in the Stack section after `/clear`, after a second `/clear`,
+  and after a prompt and its turn. The engine gives the session a new id, empties the session state
+  and keeps the mod's module variables. Events can reach the mod between the session ending and the
+  state being emptied, so idea-shelf keeps its "loaded for this session" marker in the session state
+  itself. 0.3.0 kept it in a module variable and drew an empty shelf after a real `/clear`. The tests
+  model both orders.
 - Two sessions saving within the same few milliseconds can still lose one change: the store has no
   lock across processes.
 - The side-stack mode is covered by the tests, with a stand-in for side-stack's flag and pane. The

@@ -686,3 +686,37 @@ test('side-stack order: no slot beneath, the section goes on top as before (term
     await ui.unmount()
   }
 })
+
+// 0.3.1, seen in a real session: events reach the mod under the new id
+// between session.end and the engine emptying $.state. The shelf loaded then;
+// a module variable said "loaded", and after the emptying it drew empty.
+test('real /clear order: a load before the state is emptied does not leave the shelf empty (terminal and desktop)', async ($, on) => {
+  const w = await start($, on)
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  await $.command.run(ideasCommand('testar o painel no app'))
+  await settle()
+  let n = 1
+  for (const surface of SURFACES) {
+    await $.session.end({ reason: 'clear', sessionId: `s${n}`, resume: { id: `s${n}` } } as never)
+    n++
+    w.session.id = `s${n}`
+    // An event under the new id while the old state still stands.
+    await $.turn.start({ turnId: `early${n}`, text: 'early' })
+    await w.clock.advance(10)
+    await settle()
+    // Now the engine empties the state.
+    w.stateReset = true
+    const first = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await first.find({ type: 'Text', text: /testar o painel no app/ })).toBeDefined()
+    await first.unmount()
+    await w.clock.advance(10)
+    await settle()
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await ui.find({ type: 'Text', text: /^Ideas \(1\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /No ideas parked/ })).toBeUndefined()
+    await ui.unmount()
+    expect(texts(w)).toEqual(['testar o painel no app'])
+  }
+})

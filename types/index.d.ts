@@ -14,6 +14,8 @@ declare module 'claude-code' {
       expanded: boolean
       // True while the shelf draws inside the side-stack pane (read by side-stack).
       stacked: boolean
+      // The session id the shelf was loaded for; gone with the state on /clear.
+      loadedFor: string | null
     }
   }
 }
