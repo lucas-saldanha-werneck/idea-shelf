@@ -26,6 +26,7 @@ const editing = atom({ plugin: 'idea-shelf', key: 'editing' } as const, null)
 const expanded = atom({ plugin: 'idea-shelf', key: 'expanded' } as const, false)
 // Published for side-stack: true while this shelf draws inside the stack.
 const stackedFlag = atom({ plugin: 'idea-shelf', key: 'stacked' } as const, false)
+const loadedFor = atom({ plugin: 'idea-shelf', key: 'loadedFor' } as const, null)
 
 // Line breaks and runs of spaces become one space, so every idea is one line
 // of the sent message and the line can be matched when the message enters.
@@ -85,10 +86,12 @@ let chain: Promise<void> = Promise.resolve()
 // The last write failed: this session's copy holds ideas the store lacks.
 let dirty = false
 let failureLogged = false
-// The session the atoms were loaded for. A /clear goes on under a new session
-// id with no session.start, so a mismatch means "load again".
-let loadedFor: string | null = null
-let mustLoad = true
+// The session the shelf was loaded for is kept in the session state itself
+// (`loadedFor`), not in a module variable. On a real /clear the engine goes on
+// under a new session id, empties $.state and keeps module variables, and
+// events can reach the mod between session.end and the emptying; a module
+// variable then says "loaded" while the shelf is empty (seen in a real
+// session, 0.3.0). A marker in $.state goes when the state goes.
 
 function parseSaved(raw: unknown): Saved | undefined {
   if (raw === undefined || raw === null || typeof raw !== 'object') return undefined
@@ -194,39 +197,39 @@ async function sessionId($: EngineInterface): Promise<string> {
   }
 }
 
-/** True when the shelf was loaded under another session id (a /clear), or not yet. */
+/** True when the session state holds no shelf loaded for this session id
+ *  (a fresh start, or a /clear that emptied the state). */
 async function needsLoad($: EngineInterface): Promise<boolean> {
-  return mustLoad || (await sessionId($)) !== loadedFor
+  try {
+    return (await read($, loadedFor)) !== (await sessionId($))
+  } catch {
+    return false
+  }
 }
 
-/** Loads the saved shelf once per session id: at start, and again whenever
- *  the id changed (a /clear goes on under a new id with no session.start, and
- *  session state may not carry over). After a reload it looks for side-stack
- *  again and re-publishes the `stacked` flag. */
-async function ensureLoaded($: EngineInterface): Promise<void> {
+/** Loads the saved shelf whenever the state holds none for this session id:
+ *  at start, and after a /clear (new id, state emptied, no session.start).
+ *  Except at start, it then looks for side-stack again (own pane or stack)
+ *  and re-publishes the `stacked` flag. */
+async function ensureLoaded($: EngineInterface, atStart = false): Promise<void> {
   const sid = await sessionId($)
-  if (!mustLoad && sid === loadedFor) return
-  const isNewSession = loadedFor !== null && sid !== loadedFor
-  mustLoad = false
-  loadedFor = sid
-  // After a /clear the commands may need declaring again.
-  if (isNewSession) await registerCommand($).catch(() => undefined)
+  try {
+    // Fresh: the value as it stands now, not as this dispatch began.
+    if ((await update($, loadedFor, v => v)) === sid) return
+  } catch {
+    return
+  }
   await change($, (items, n) => ({ items, nextId: n }), false).catch(() => undefined)
-  if (isNewSession) await placePane($)
+  await update($, loadedFor, () => sid).catch(() => undefined)
+  if (!atStart) await placePane($)
 }
 
 // A render may not write state: it schedules the reload and draws what the
-// store holds meanwhile.
-let reloadScheduled = false
+// store holds meanwhile. Several scheduled reloads are harmless: the first
+// sets the marker and the rest return at once.
 async function shelfForRender($: EngineInterface): Promise<ShelfIdea[] | undefined> {
   if (!(await needsLoad($))) return undefined
-  if (!reloadScheduled) {
-    reloadScheduled = true
-    later($, () => {
-      reloadScheduled = false
-      void ensureLoaded($).catch(() => undefined)
-    })
-  }
+  later($, () => void ensureLoaded($).catch(() => undefined))
   try {
     return parseSaved(await $.store.get(storeKey))?.items ?? []
   } catch {
@@ -486,8 +489,7 @@ function fillSlot(node: unknown, section: unknown): unknown {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     storeKey = `ideas:${e.cwd}`
-    mustLoad = true
-    await ensureLoaded($)
+    await ensureLoaded($, true)
     await registerCommand($)
     // Plugin load order is unknown: the host may set its flag after this
     // start. Look a moment later, and once more about a second later.
@@ -508,7 +510,6 @@ export const register: Register = on => {
     if (e.reason === 'clear') {
       for (const [no, one] of sends) abandoned.set(no, one)
       sends.clear()
-      mustLoad = true
       await update($, ideas, current => current.map(plain)).catch(() => undefined)
     }
     return next(e)
