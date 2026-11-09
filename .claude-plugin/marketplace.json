@@ -9,7 +9,7 @@
     {
       "name": "idea-shelf",
       "source": "./",
-      "description": "A side shelf for ideas that come up mid-task: jot them down without sidetracking Claude, then send the list in one click."
+      "description": "A side pane to park ideas mid-task without stopping Claude, then send them in one click."
     }
   ]
 }
