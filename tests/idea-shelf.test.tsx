@@ -155,7 +155,9 @@ type World = {
   logs: string[]
   stackedFlag: boolean[]
   session: { id: string }
-  host: { flag: boolean; command: boolean }
+  host: { command: boolean; foreign: boolean }
+  // Stands for the host dropping this mod's session state (a /clear).
+  stateReset: boolean
   storeBroken: { set: number | 'always' }
   clock: ReturnType<typeof mock.clock>
 }
@@ -172,7 +174,8 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
     logs: [],
     stackedFlag: [],
     session: { id: 's1' },
-    host: { flag: false, command: false },
+    host: { command: false, foreign: false },
+    stateReset: false,
     storeBroken: { set: 0 },
     clock: mock.clock(on, { now: 1_000_000 }),
   }
@@ -197,19 +200,25 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('command.list', () => ({
-    value: w.host.command ? [{ name: 'stack', description: 'Open the Stack pane', source: 'plugin', plugin: 'side-stack@side-stack' }] : [],
+    value: [
+      ...(w.host.command ? [{ name: 'stack', description: 'Open the Stack pane', source: 'plugin', plugin: 'side-stack@side-stack' }] : []),
+      ...(w.host.foreign ? [{ name: 'stack', description: 'Something else', source: 'plugin', plugin: 'other-mod@other' }] : []),
+    ],
   }) as never)
   on('command.run', { command: 'stack' }, () => {
     w.stackRuns++
     return { text: 'Stack opened.' } as never
   })
+  // While stateReset holds, this mod's session values read as never written,
+  // as in a new session; its first write ends that.
   on('state.get', async (_$, e, next) => {
     const ref = e as unknown as { plugin: string; key: string }
-    if (ref.plugin === 'side-stack' && ref.key === 'present') return { value: { value: w.host.flag, version: 1 } } as never
+    if (w.stateReset && ref.plugin === 'idea-shelf') return { value: { value: undefined, version: 0 } } as never
     return next(e)
   })
   on('state.set', async (_$, e, next) => {
     const ref = e as unknown as { plugin: string; key: string; value: unknown }
+    if (ref.plugin === 'idea-shelf') w.stateReset = false
     if (ref.plugin === 'idea-shelf' && ref.key === 'stacked') w.stackedFlag.push(ref.value === true)
     return next(e)
   })
@@ -497,9 +506,9 @@ test('alone: own pane opens after start; nothing drawn in a stack (terminal and 
   expect(w.stackedFlag.includes(true)).toBe(false)
 })
 
-test('a host flag without a live /stack command does not count as side-stack', async ($, on) => {
+test('a /stack command from another plugin does not count as side-stack', async ($, on) => {
   const w = await start($, on)
-  w.host.flag = true
+  w.host.foreign = true
   await w.clock.advance(1500)
   await settle()
   expect(w.opened).toContain('idea-shelf')
@@ -520,7 +529,6 @@ test('stacked: own pane closed, section headed Ideas with the full send flow, se
   await w.clock.advance(150)
   await settle()
   expect(w.opened).toContain('idea-shelf')
-  w.host.flag = true
   w.host.command = true
   await w.clock.advance(1500)
   await settle()
@@ -566,7 +574,6 @@ test('stacked: own pane closed, section headed Ideas with the full send flow, se
 
 test('stacked: the section keeps a row budget, with Show all for the rest (terminal and desktop)', async ($, on) => {
   const w = await start($, on)
-  w.host.flag = true
   w.host.command = true
   await w.clock.advance(1500)
   await settle()
@@ -582,5 +589,46 @@ test('stacked: the section keeps a row budget, with Show all for the rest (termi
     expect(await ui.find({ key: 'idea-send' })).toBeDefined()
     await ui.press({ key: 'idea-more' })
     await ui.unmount()
+  }
+})
+
+// v3 (real terminal test): after a real /clear the session state is gone and
+// no session.start fires. The list must come back from the store and the
+// section must stay in the stack, found by side-stack's /stack command alone.
+test('real /clear: session.end, new id, no session.start, then a turn: list back, section in the stack (terminal and desktop)', async ($, on) => {
+  const w = await start($, on)
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  await $.command.run(ideasCommand('call the supplier'))
+  await settle()
+  let n = 1
+  for (const surface of SURFACES) {
+    await $.session.end({ reason: 'clear', sessionId: `s${n}`, resume: { id: `s${n}` } } as never)
+    n++
+    w.session.id = `s${n}`
+    w.stateReset = true
+    // Drawn before any other event: the render does not write state, so it
+    // draws what the store holds and leaves the reload to a timer.
+    const first = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await first.find({ type: 'Text', text: /call the supplier/ })).toBeDefined()
+    expect(await first.find({ type: 'Text', text: /SECTION-BELOW/ })).toBeDefined()
+    await first.unmount()
+    // Then a turn, as after the person types a prompt.
+    await $.turn.start({ turnId: `t${n}`, text: 'carry on' })
+    await w.clock.advance(10)
+    await settle()
+    expect(w.stateReset).toBe(false)
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await ui.find({ type: 'Text', text: /^Ideas \(1\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /call the supplier/ })).toBeDefined()
+    expect(await ui.find({ key: 'idea-send' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /SECTION-BELOW/ })).toBeDefined()
+    await ui.unmount()
+    const own = await $.ui.mount({ plugin: 'idea-shelf', surface, ...PANE })
+    expect(await own.find({ type: 'Text', text: /Shown in the Stack pane/ })).toBeDefined()
+    await own.unmount()
+    expect(w.stackedFlag.at(-1)).toEqual(true)
+    expect(texts(w)).toEqual(['call the supplier'])
   }
 })

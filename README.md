@@ -73,8 +73,10 @@ back in a new session in the same folder and after reloading the app. Only Delet
 entering the chat, takes an idea off.
 
 - **`/clear`.** The Claude Code docs say a `/clear` ends the session and the process goes on under a
-  new session id, with no new session start. idea-shelf notices the new id and loads the shelf from
-  the store again, and it never writes an empty shelf over the saved one. If you `/clear` while sent
+  new session id, with no new session start, and session state does not carry over. idea-shelf
+  notices the new id on the next prompt, turn, `/ideas` or redraw and loads the shelf from the store
+  again. A redraw may not write state, so it draws what the store holds and leaves the reload to a
+  timer. It never writes an empty shelf over the saved one. If you `/clear` while sent
   ideas are still waiting, they come back as normal ideas, ready to send again. If that earlier
   message does enter after all, its ideas still leave, so they never reach Claude twice. This was
   tested the way the docs describe a `/clear`, not by hand.
@@ -109,10 +111,11 @@ called "Stack" and are drawn one under the other.
   first 6 ideas and a "Show all" button for the rest. If the own pane is still drawn somewhere, it
   shows one line, "Shown in the Stack pane (/stack)", so the list never shows twice.
 
-side-stack counts as present only when its `present` flag is set (idea-shelf reads it, never writes
-it) and its `/stack` command is live. idea-shelf checks 100 ms and about 1.1 s after the session
-starts, because the order in which mods load is not fixed, and again on every change and every
-`/ideas`. If side-stack goes away, the own pane comes back on the next change. While idea-shelf draws
+side-stack counts as present when its `/stack` command is live, and nothing else is required.
+side-stack's own session flag is not used, because a `/clear` starts a new session and session state
+does not carry over. idea-shelf checks 100 ms and about 1.1 s after the session starts, because the
+order in which mods load is not fixed. It checks again on every change, on every `/ideas`, and after
+reloading the shelf for a new session id. If side-stack goes away, the own pane comes back on the next change. While idea-shelf draws
 inside the stack it sets its own flag `idea-shelf.stacked` to true, which side-stack reads to hide its
 install hint. The order of the sections inside the Stack pane follows the load order too, and
 idea-shelf does not try to change it.
@@ -145,9 +148,9 @@ From a shell, the same commands work with `claude plugin` in place of `/plugin`.
 - Ideas are saved in Claude Code's per-plugin store, not in a file you can edit.
 - The waiting mark is not saved: an app reload while ideas are waiting brings them back as normal
   ideas, so if the message had already entered, you may see them again and delete them by hand.
-- The docs do not say whether a `/clear` resets a mod's session state. idea-shelf reloads from the
-  store either way. The tests model a `/clear` as the docs describe it (session end, new id, no
-  session start).
+- The tests model a `/clear` as the docs describe it and as a real terminal test of the sibling
+  mods showed it: session end, new id, no session start, session state gone. idea-shelf itself has
+  not been tried with a real `/clear` yet.
 - Two sessions saving within the same few milliseconds can still lose one change: the store has no
   lock across processes.
 - The side-stack mode is covered by the tests, with a stand-in for side-stack's flag and pane. The

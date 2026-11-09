@@ -15,7 +15,5 @@ declare module 'claude-code' {
       // True while the shelf draws inside the side-stack pane (read by side-stack).
       stacked: boolean
     }
-    // Read only: the side-stack host sets it at session start.
-    'side-stack': { present: boolean }
   }
 }

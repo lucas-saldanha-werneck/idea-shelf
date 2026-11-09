@@ -21,8 +21,6 @@ const editing = atom({ plugin: 'idea-shelf', key: 'editing' } as const, null)
 const expanded = atom({ plugin: 'idea-shelf', key: 'expanded' } as const, false)
 // Published for side-stack: true while this shelf draws inside the stack.
 const stackedFlag = atom({ plugin: 'idea-shelf', key: 'stacked' } as const, false)
-// Set by the side-stack host plugin; this mod only reads it.
-const hostFlag = atom({ plugin: 'side-stack', key: 'present' } as const, false)
 
 // Line breaks and runs of spaces become one space, so every idea is one line
 // of the sent message and the line can be matched when the message enters.
@@ -32,28 +30,40 @@ const plain = (i: ShelfIdea): Idea => ({ id: i.id, text: i.text })
 
 // ---- side-stack --------------------------------------------------------------
 
-// side-stack counts as present only when its flag is set AND its /stack
-// command is live (a flag left from a disabled host is not enough).
+// side-stack counts as present when its /stack command is live. That alone:
+// its `present` state is per session and is gone after a /clear.
 async function hostPresent($: EngineInterface): Promise<boolean> {
   try {
-    // The command first: reading the state of a plugin that is not loaded is refused.
     const commands = await $.command.list()
-    if (!commands.some(c => c.name === 'stack' && (c.plugin ?? '').split('@')[0] === 'side-stack')) return false
-    return (await read($, hostFlag)) === true
+    return commands.some(c => c.name === 'stack' && (c.plugin ?? '').split('@')[0] === 'side-stack')
   } catch {
     return false
   }
 }
 
-// Checks the host and keeps the published `stacked` flag in step with it.
-async function isStacked($: EngineInterface): Promise<boolean> {
+// Checks the host and keeps the published `stacked` flag in step with it. A
+// render hook may not write state: there `publish` is false and the write is
+// left to a timer.
+async function isStacked($: EngineInterface, publish = true): Promise<boolean> {
   const stacked = await hostPresent($)
   try {
-    if ((await read($, stackedFlag)) !== stacked) await update($, stackedFlag, () => stacked)
+    if ((await read($, stackedFlag)) !== stacked) {
+      if (publish) await update($, stackedFlag, () => stacked)
+      else later($, () => void isStacked($))
+    }
   } catch {
     // The flag is a courtesy to side-stack; the shelf works without it.
   }
   return stacked
+}
+
+// Runs `fn` as its own dispatch, right after the current one.
+function later($: EngineInterface, fn: () => void): void {
+  try {
+    $.clock.after(0, fn)
+  } catch {
+    // No clock: the next event does it.
+  }
 }
 
 // ---- Saved shelf -------------------------------------------------------------
@@ -171,14 +181,25 @@ function change($: EngineInterface, fn: Change, write = true): Promise<void> {
   return run
 }
 
-/** Loads the saved shelf once per session (start, or after a /clear). */
-async function ensureLoaded($: EngineInterface): Promise<void> {
-  let sid = ''
+async function sessionId($: EngineInterface): Promise<string> {
   try {
-    sid = await $.session.id()
+    return await $.session.id()
   } catch {
-    // Unknown id: load once.
+    return ''
   }
+}
+
+/** True when the shelf was loaded under another session id (a /clear), or not yet. */
+async function needsLoad($: EngineInterface): Promise<boolean> {
+  return mustLoad || (await sessionId($)) !== loadedFor
+}
+
+/** Loads the saved shelf once per session id: at start, and again whenever
+ *  the id changed (a /clear goes on under a new id with no session.start, and
+ *  session state may not carry over). After a reload it looks for side-stack
+ *  again and re-publishes the `stacked` flag. */
+async function ensureLoaded($: EngineInterface): Promise<void> {
+  const sid = await sessionId($)
   if (!mustLoad && sid === loadedFor) return
   const isNewSession = loadedFor !== null && sid !== loadedFor
   mustLoad = false
@@ -186,6 +207,26 @@ async function ensureLoaded($: EngineInterface): Promise<void> {
   // After a /clear the commands may need declaring again.
   if (isNewSession) await registerCommand($).catch(() => undefined)
   await change($, (items, n) => ({ items, nextId: n }), false).catch(() => undefined)
+  if (isNewSession) await placePane($)
+}
+
+// A render may not write state: it schedules the reload and draws what the
+// store holds meanwhile.
+let reloadScheduled = false
+async function shelfForRender($: EngineInterface): Promise<ShelfIdea[] | undefined> {
+  if (!(await needsLoad($))) return undefined
+  if (!reloadScheduled) {
+    reloadScheduled = true
+    later($, () => {
+      reloadScheduled = false
+      void ensureLoaded($).catch(() => undefined)
+    })
+  }
+  try {
+    return parseSaved(await $.store.get(storeKey))?.items ?? []
+  } catch {
+    return undefined
+  }
 }
 
 const registerCommand = ($: EngineInterface) =>
@@ -350,7 +391,8 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
   // The mobile app draws no text field yet: /ideas <text> parks one there.
   const Input = 'Input' in table ? table.Input : undefined
   const k = stacked ? 'idea-' : ''
-  const list = await read($, ideas)
+  const fromStore = await shelfForRender($)
+  const list = fromStore ?? (await read($, ideas))
   const editId = await read($, editing)
   const isExpanded = await read($, expanded)
   const unsent = list.filter(i => i.sent === undefined).length
@@ -471,6 +513,7 @@ export const register: Register = on => {
   // The mod's own prompt entering: once the hooks beneath let it in (no drop),
   // its ideas leave.
   on('prompt.submit', async ($, e, next) => {
+    await ensureLoaded($).catch(() => undefined)
     const origin = e.origin as { kind: string; name?: string } | undefined
     const isMine = origin?.kind === 'plugin' && (origin.name ?? '').split('@')[0] === $.plugin.name.split('@')[0]
     const result = await next(e)
@@ -488,8 +531,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    await ensureLoaded($)
-    if (await isStacked($)) {
+    if (await isStacked($, false)) {
       const { Text } = $.ui.resolve(e)
       return <Text dimColor>Shown in the Stack pane (/stack)</Text>
     }
@@ -501,8 +543,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: STACK }, async ($, e, next) => {
     let section = null
     try {
-      if (await isStacked($)) {
-        await ensureLoaded($)
+      if (await isStacked($, false)) {
         section = await drawShelf($, e, true)
       }
     } catch {
