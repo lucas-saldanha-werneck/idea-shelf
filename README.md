@@ -35,15 +35,11 @@ If Claude is in the middle of a turn, the message waits until the turn ends.
 At the prompt of a terminal Claude Code session:
 
 ```
-/plugin marketplace add lucas-saldanha-werneck/idea-shelf
-/plugin install idea-shelf@idea-shelf
+/plugin marketplace add lucas-saldanha-werneck/claude-plugins
+/plugin install idea-shelf@lucas-plugins
 ```
 
-Or from a shell, in one step:
-
-```
-claude plugin install idea-shelf --marketplace lucas-saldanha-werneck/idea-shelf
-```
+From a shell, the same commands work with `claude plugin` in place of `/plugin`.
 
 `/plugin` does not run in the desktop app. Install from a terminal with the user scope, and the mod
 also loads in the desktop app's local Code sessions.
@@ -143,13 +139,12 @@ message it carries. A dropped or failed prompt removes only that Send's marks.
 ## Uninstall
 
 ```
-/plugin uninstall idea-shelf@idea-shelf
-/plugin marketplace remove idea-shelf
+/plugin uninstall idea-shelf@lucas-plugins
 ```
 
 From a shell, the same commands work with `claude plugin` in place of `/plugin`.
 
-## Limits and what was not tested
+## Limits
 
 - Built and tested on Claude Code 2.1.319. It needs a version with mods (hooks modules).
 - Ideas are saved in Claude Code's per-plugin store, not in a file you can edit.
