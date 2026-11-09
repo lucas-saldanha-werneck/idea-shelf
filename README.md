@@ -102,7 +102,8 @@ There are no settings and nothing else to install.
 
 The desktop app and the terminal show each mod's pane as a separate tab, one at a time. If you also
 use [side-stack](https://github.com/lucas-saldanha-werneck/side-stack), several mods share one pane
-called "Stack" and are drawn one under the other.
+called "Stack" and are drawn one under the other. The mods that can share it are assumptions-pane,
+idea-shelf, plan-checklist and clean-view.
 
 - **Alone** (side-stack not installed): idea-shelf opens its own "Ideas" pane, as before.
 - **With side-stack**: idea-shelf does not open its own pane (it closes it if it had already
@@ -115,10 +116,16 @@ side-stack counts as present when its `/stack` command is live, and nothing else
 side-stack's own session flag is not used, because a `/clear` starts a new session and session state
 does not carry over. idea-shelf checks 100 ms and about 1.1 s after the session starts, because the
 order in which mods load is not fixed. It checks again on every change, on every `/ideas`, and after
-reloading the shelf for a new session id. If side-stack goes away, the own pane comes back on the next change. While idea-shelf draws
-inside the stack it sets its own flag `idea-shelf.stacked` to true, which side-stack reads to hide its
-install hint. The order of the sections inside the Stack pane follows the load order too, and
-idea-shelf does not try to change it.
+reloading the shelf for a new session id. If side-stack goes away, the own pane comes back on the
+next change. While idea-shelf draws inside the stack it sets its own flag `idea-shelf.stacked` to
+true, which side-stack reads to hide its install hint.
+
+**Section order.** side-stack decides the order of the sections: install order by default, or the
+order you set with side-stack's `/stack order`. idea-shelf draws its section in a box keyed
+`side-stack:idea-shelf`, so side-stack can move it. When side-stack wants the section somewhere
+idea-shelf cannot reach by drawing on top, it leaves an empty box keyed `side-stack:slot:idea-shelf`,
+and idea-shelf puts its section there. With no such box (an older side-stack), the section goes on
+top of the others, as in 0.2.
 
 ## How it works
 

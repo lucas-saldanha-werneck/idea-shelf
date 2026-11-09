@@ -14,6 +14,11 @@ const MAX_IDEAS = 200
 // In the shared stack the section keeps a row budget, so it never pushes the
 // other sections off screen: the first few ideas, then "Show all".
 const STACK_SHOWN = 6
+// Section order (side-stack protocol v4): the section is keyed so side-stack
+// can move it, and side-stack leaves an empty Box keyed SLOT_KEY where it wants
+// a section that sits above it in the chain.
+const SECTION_KEY = 'side-stack:idea-shelf'
+const SLOT_KEY = 'side-stack:slot:idea-shelf'
 
 const ideas = atom({ plugin: 'idea-shelf', key: 'ideas' } as const, [])
 const nextId = atom({ plugin: 'idea-shelf', key: 'nextId' } as const, 1)
@@ -399,7 +404,7 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
   const shown = stacked && !isExpanded ? list.slice(0, STACK_SHOWN) : list
 
   return (
-    <Box key={stacked ? 'idea-shelf' : 'shelf'} flexDirection="column" gap={1}>
+    <Box key={stacked ? SECTION_KEY : 'shelf'} flexDirection="column" gap={1}>
       {stacked && <Text bold>{list.length > 0 ? `Ideas (${list.length})` : 'Ideas'}</Text>}
       {Input !== undefined ? (
         <Input key={`${k}new`} placeholder="Park an idea" submitLabel="park" onSubmit={(value: string) => addIdea($, value)} />
@@ -452,6 +457,28 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
       )}
     </Box>
   )
+}
+
+// ---- Section order -------------------------------------------------------------
+
+type El = { props?: Record<string, unknown>; children?: unknown[] }
+
+/** A copy of `node` with the Box keyed SLOT_KEY replaced by `section`, or
+ *  undefined when there is no such Box (no side-stack order beneath). */
+function fillSlot(node: unknown, section: unknown): unknown {
+  const el = node as El | null
+  if (el === null || typeof el !== 'object' || !Array.isArray(el.children)) return undefined
+  for (let i = 0; i < el.children.length; i++) {
+    const child = el.children[i] as El | null
+    const isSlot = child !== null && typeof child === 'object' && child.props?.key === SLOT_KEY
+    const swapped = isSlot ? section : fillSlot(child, section)
+    if (swapped !== undefined) {
+      const children = [...el.children]
+      children[i] = swapped
+      return { ...el, children }
+    }
+  }
+  return undefined
 }
 
 // ---- Hooks -------------------------------------------------------------------
@@ -551,6 +578,9 @@ export const register: Register = on => {
     }
     const below = await next(e)
     if (section === null) return below
+    // side-stack asked for this section in a set place: fill it there.
+    const filled = fillSlot(below, section)
+    if (filled !== undefined) return filled as typeof below
     const { Box } = $.ui.resolve(e)
     return (
       <Box flexDirection="column" gap={1}>

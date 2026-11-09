@@ -632,3 +632,57 @@ test('real /clear: session.end, new id, no session.start, then a turn: list back
     expect(texts(w)).toEqual(['call the supplier'])
   }
 })
+
+// v4: side-stack orders the sections. It leaves an empty Box keyed
+// side-stack:slot:idea-shelf where it wants this section; the shelf fills it.
+async function stackedWorld($: Engine, on: On, withSlot: boolean): Promise<World> {
+  on('ui.render', { component: 'Pane', requestId: 'side-stack' }, ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text>SECTION-A</Text>
+        {withSlot ? <Box key="side-stack:slot:idea-shelf" flexDirection="column" /> : null}
+        <Text>SECTION-B</Text>
+      </Box>
+    )
+  })
+  const w = await start($, on, {}, { below: false })
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  await $.command.run(ideasCommand('call the supplier'))
+  return w
+}
+
+const order = async (ui: { findAll: (q: { type: 'Text' }) => Promise<readonly { text: string }[]> }) =>
+  (await ui.findAll({ type: 'Text' }))
+    .map(t => t.text)
+    .filter(t => /^SECTION-|^Ideas/.test(t))
+
+test('side-stack order: the section fills its slot, between the sections around it (terminal and desktop)', async ($, on) => {
+  await stackedWorld($, on, true)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas (1)', 'SECTION-B'])
+    expect(await ui.find({ key: 'side-stack:idea-shelf' })).toBeDefined()
+    expect(await ui.find({ key: 'side-stack:slot:idea-shelf' })).toBeUndefined()
+    // The filled section still works.
+    await ui.input({ key: 'idea-new', text: `second on ${surface}` })
+    expect(await ui.find({ type: 'Text', text: new RegExp(`second on ${surface}`) })).toBeDefined()
+    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas (2)', 'SECTION-B'])
+    const id = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).find(k => k.startsWith('idea-del-'))!
+    await ui.press({ key: id })
+    expect(await ui.find({ key: 'idea-send' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('side-stack order: no slot beneath, the section goes on top as before (terminal and desktop)', async ($, on) => {
+  await stackedWorld($, on, false)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await order(ui as never)).toEqual(['Ideas (1)', 'SECTION-A', 'SECTION-B'])
+    expect(await ui.find({ key: 'side-stack:idea-shelf' })).toBeDefined()
+    await ui.unmount()
+  }
+})
