@@ -53,28 +53,45 @@ also loads in the desktop app's local Code sessions.
 - The pane opens when a session starts. In a terminal, Claude Code only places a pane you did not
   ask for when the window is at least 144 columns wide (110 if you have opened it before). Below
   that it waits. `/ideas` opens it at any width.
-- Type an idea in the field and press Enter (or the park button). Claude is not interrupted.
+- Type an idea in the field and press Enter (or the park button). Claude is not interrupted. Line
+  breaks and runs of spaces in an idea become one space, so each idea is one line of the message.
 - Edit opens the idea in a text field. Save it empty to delete it. Delete removes it.
 - Send N hands the list to Claude. The ideas do not leave the shelf right away: each one shows
-  "sent, waiting for Claude" until the message actually enters the chat (Claude's current turn has
-  to end first). Then they leave. If the message does not get through (for example, a hook blocks
-  it), the waiting mark goes away, the ideas are ready to send again, and a toast says so.
-- While an idea is waiting it cannot be edited (so the message and the shelf stay the same), but
-  it can be deleted. Ideas you park meanwhile are not part of that message; Send sends them next.
+  "sent, waiting for Claude" until the message actually enters the chat. A message from a mod enters
+  only once Claude's current turn has ended, so this can take a while. Then they leave. If the
+  message does not get through (for example, a hook blocks it), the waiting mark goes away, the
+  ideas are ready to send again, and a toast says so.
+- A waiting idea has no Edit or Delete button, because the message already carries it. Ideas you
+  park meanwhile are not part of that message; Send sends them next.
+- Each Send remembers its own ideas. If two Sends carry the same text, the first message entering
+  removes only the first Send's idea.
 
 ### Saved per folder
 
-The shelf is saved per working folder in the mod's store (`$.store`, key `ideas:<folder>`). It
-comes back after `/clear`, after reloading the app, and in a new session in the same folder. Only
-Delete, or a sent message entering the chat, takes an idea off. If you `/clear` while sent ideas
-are still waiting, they come back as normal ideas, ready to send again.
+The shelf is saved per working folder in the mod's store (`$.store`, key `ideas:<folder>`). It comes
+back in a new session in the same folder and after reloading the app. Only Delete, or a sent message
+entering the chat, takes an idea off.
+
+- **`/clear`.** The Claude Code docs say a `/clear` ends the session and the process goes on under a
+  new session id, with no new session start. idea-shelf notices the new id and loads the shelf from
+  the store again, and it never writes an empty shelf over the saved one. If you `/clear` while sent
+  ideas are still waiting, they come back as normal ideas, ready to send again. If that earlier
+  message does enter after all, its ideas still leave, so they never reach Claude twice. This was
+  tested the way the docs describe a `/clear`, not by hand.
+- **Two sessions in the same folder** share one saved shelf. Every change re-reads the saved shelf
+  and applies itself to that, so one session never overwrites the other's ideas. The other
+  session's ideas show up the next time this one changes something.
+- An empty shelf removes its key, so folders you no longer use leave nothing behind. If the store is
+  full (Claude Code allows 4 MiB per plugin), empty shelves of other folders are dropped and the save
+  is tried again. If it still fails, one line in the transcript says so and the ideas stay for this
+  session only.
 
 Commands:
 
 | Command | What it does |
 | --- | --- |
-| `/ideas` | Opens the pane and focuses it. Inside side-stack it runs `/stack` instead. |
-| `/ideas <text>` | Parks one idea. |
+| `/ideas` | Opens the pane and focuses it. Inside side-stack it runs side-stack's `/stack` instead. |
+| `/ideas <text>` | Parks one idea (inside side-stack it also runs `/stack`, so you see it). |
 | `/ideas send` | Sends the ideas that are not already waiting and says how many ("Sending 2 ideas to Claude."), or says "No ideas to send." It does not wait for the message to enter. |
 
 There are no settings and nothing else to install.
@@ -89,23 +106,29 @@ called "Stack" and are drawn one under the other.
 - **With side-stack**: idea-shelf does not open its own pane (it closes it if it had already
   opened before side-stack loaded). It draws a section headed "Ideas" inside the Stack pane, and
   always draws the other mods' sections below it. To leave room for them, the section shows the
-  first 6 ideas and a "Show all" button for the rest.
+  first 6 ideas and a "Show all" button for the rest. If the own pane is still drawn somewhere, it
+  shows one line, "Shown in the Stack pane (/stack)", so the list never shows twice.
 
-idea-shelf finds side-stack by reading side-stack's `present` flag (read only) at session start, and
-once more about a second later, because the order in which mods load is not fixed. The order of the
-sections inside the Stack pane follows that load order too, and idea-shelf does not try to change
-it.
+side-stack counts as present only when its `present` flag is set (idea-shelf reads it, never writes
+it) and its `/stack` command is live. idea-shelf checks 100 ms and about 1.1 s after the session
+starts, because the order in which mods load is not fixed, and again on every change and every
+`/ideas`. If side-stack goes away, the own pane comes back on the next change. While idea-shelf draws
+inside the stack it sets its own flag `idea-shelf.stacked` to true, which side-stack reads to hide its
+install hint. The order of the sections inside the Stack pane follows the load order too, and
+idea-shelf does not try to change it.
 
 ## How it works
 
 The mod is one hooks module (`hooks/register.tsx`). At session start it loads the saved shelf for
 the folder, registers the `/ideas` command and opens its pane (or not, inside side-stack). Ideas are
-kept in the mod's session state and saved to `$.store` after every change. Send claims the ideas
-that are not already waiting in one atomic update (so two presses never send an idea twice), marks
-them waiting, builds the numbered list and submits it with `$.prompt.submit`. They leave the shelf
-when the submit resolves, or when the mod sees its own prompt or the turn that prompt starts (matched
-by the numbered lines under the header, because in the app the submit's promise may not settle). A
-dropped or failed prompt removes only the waiting mark.
+kept in the mod's session state. Each change re-reads the saved shelf, applies itself, and writes the
+result to `$.store`. Send claims the ideas that are not already waiting in one atomic update of the
+shelf (so two presses never send an idea twice), marks them with that Send's number, builds the
+numbered list and submits it with `$.prompt.submit`. The engine resolves that call with the prompt
+once it has entered. The ideas leave when it resolves, or when the mod sees its own prompt pass the
+hooks beneath without a drop, or when the turn that prompt starts begins. That last check matters
+because in the app the submit's promise may never settle. A turn is matched to the oldest Send whose
+message it carries. A dropped or failed prompt removes only that Send's marks.
 
 ## Uninstall
 
@@ -122,19 +145,27 @@ From a shell, the same commands work with `claude plugin` in place of `/plugin`.
 - Ideas are saved in Claude Code's per-plugin store, not in a file you can edit.
 - The waiting mark is not saved: an app reload while ideas are waiting brings them back as normal
   ideas, so if the message had already entered, you may see them again and delete them by hand.
+- The docs do not say whether a `/clear` resets a mod's session state. idea-shelf reloads from the
+  store either way. The tests model a `/clear` as the docs describe it (session end, new id, no
+  session start).
+- Two sessions saving within the same few milliseconds can still lose one change: the store has no
+  lock across processes.
 - The side-stack mode is covered by the tests, with a stand-in for side-stack's flag and pane. The
   way mods share the pane was tried by hand with two throwaway mods in Claude Code 2.1.319;
   idea-shelf itself has not been tried by hand inside side-stack yet.
 - The shelf keeps the last 200 ideas. An idea is cut at 1000 characters.
-- The tests draw the pane on the `terminal` and `desktop` surfaces. Nobody has tried it by hand in
-  the desktop app.
+- The tests draw every view (own pane, stacked section, buttons, the Send flow) on both the
+  `terminal` and `desktop` surfaces, and they use only elements both have (Box, Text, Button,
+  Input). One difference: the terminal only places a pane you did not ask for when the window is wide
+  enough (see Use). The docs state that rule in terminal columns only, and how the desktop app places
+  such a pane was not checked. Nobody has tried it by hand in the desktop app.
 - Not tested on the mobile app. Where the app draws no text fields, the pane shows
   "Type /ideas your idea to park one." and only the Delete and Send buttons.
 - Tests: `claude plugin test .` and `claude plugin validate .`.
 
 ## Credits
 
-The idea comes from the "Idea Shelf" mod in the AI LABS video [Claude Mods Are Insane... You Need To Try These Right Now](https://www.youtube.com/watch?v=ERNqRK6sMJY&t=532) (08:52, 9 Oct 2026). This code was written separately with Claude Code.
+The idea comes from the "Idea Shelf" mod in the AI LABS video [Claude Mods Are Insane... You Need To Try These Right Now](https://www.youtube.com/watch?v=ERNqRK6sMJY) (9 Oct 2026), [Idea Shelf at 08:52](https://www.youtube.com/watch?v=ERNqRK6sMJY&t=532). This code was written separately with Claude Code.
 
 ## License
 
