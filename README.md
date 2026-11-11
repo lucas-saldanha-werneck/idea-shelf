@@ -36,7 +36,7 @@ At the prompt of a terminal Claude Code session:
 
 ```
 /plugin marketplace add lucas-saldanha-werneck/claude-plugins
-/plugin install idea-shelf@lucas-plugins
+/plugin install idea-shelf@lucas-tools
 ```
 
 From a shell, the same commands work with `claude plugin` in place of `/plugin`.
@@ -139,7 +139,7 @@ message it carries. A dropped or failed prompt removes only that Send's marks.
 ## Uninstall
 
 ```
-/plugin uninstall idea-shelf@lucas-plugins
+/plugin uninstall idea-shelf@lucas-tools
 ```
 
 From a shell, the same commands work with `claude plugin` in place of `/plugin`.
