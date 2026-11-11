@@ -35,7 +35,7 @@ If Claude is in the middle of a turn, the message waits until the turn ends.
 At the prompt of a terminal Claude Code session:
 
 ```
-/plugin marketplace add lucas-saldanha-werneck/claude-plugins
+/plugin marketplace add lucas-saldanha-werneck/lucas-tools
 /plugin install idea-shelf@lucas-tools
 ```
 
