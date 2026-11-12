@@ -781,3 +781,57 @@ test('real /clear order: a load before the state is emptied does not leave the s
     expect(texts(w)).toEqual(['testar o painel no app'])
   }
 })
+
+// ---- Audit round 2 -------------------------------------------------------------
+
+// IS-01: after failed writes, the recovery merged by id, so an edit of a saved
+// idea was lost and a deleted one came back.
+test('edits and deletes made while saving fails are kept once saving works again', async ($, on) => {
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }], nextId: 3 } })
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  w.storeBroken.set = 'always'
+  await ui.press({ key: 'del-1' })
+  await ui.press({ key: 'edit-2' })
+  await ui.input({ key: 'edit-input-2', text: 'b edited' })
+  await $.command.run(ideasCommand('mine'))
+  await settle()
+  expect(texts(w)).toEqual(['a', 'b'])
+  w.storeBroken.set = 0
+  await $.command.run(ideasCommand('more'))
+  await settle()
+  expect(texts(w)).toEqual(['b edited', 'mine', 'more'])
+  await ui.unmount()
+})
+
+// IS-03: the message entering removed by id only, so an idea another session
+// had edited (or a new idea under a reused id) left with it.
+test('a sent idea that another session edited meanwhile stays when the message enters', async ($, on) => {
+  const entered = neverSettles(on)
+  const w = await start($, on)
+  await $.command.run(ideasCommand('fix the tests'))
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  void ui.press({ key: 'send' })
+  await settle()
+  const id = saved(w)!.items[0].id
+  w.kept['ideas:/tmp'] = { items: [{ id, text: 'fix the tests and the docs' }], nextId: id + 1 }
+  await $.turn.start({ turnId: 't2', text: `The idea-shelf plugin sent a message: ${entered.at(-1)}` })
+  await settle()
+  expect(texts(w)).toEqual(['fix the tests and the docs'])
+  await ui.unmount()
+})
+
+// IS-04: Send built its list from this session's copy, so ideas another
+// session had already sent (and that left the saved shelf) went again.
+test('Send re-reads the saved shelf: ideas another session already sent do not go again', async ($, on) => {
+  const entered = neverSettles(on)
+  const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 1, text: 'x' }, { id: 2, text: 'y' }], nextId: 3 } })
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /• x/ })).toBeDefined()
+  // The other session sent x; it left the saved shelf.
+  w.kept['ideas:/tmp'] = { items: [{ id: 2, text: 'y' }], nextId: 3 }
+  void ui.press({ key: 'send' })
+  await settle()
+  expect(entered.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. y')
+  await ui.unmount()
+})

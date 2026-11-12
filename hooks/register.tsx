@@ -83,12 +83,11 @@ type Saved = { items: Idea[]; nextId: number }
 
 let storeKey = 'ideas:default'
 let chain: Promise<void> = Promise.resolve()
-// The last write failed: this session's copy holds ideas the store lacks.
-let dirty = false
-// The store could not be read: nothing is written (it would go over ideas this
-// session never saw). The changes stay in this session's copy, and `unread`
-// keeps the shelf as it was before them; the next read applies the difference
-// to the saved shelf (see rebase) and writes it.
+// Changes this session holds that the store lacks: the store could not be read
+// (nothing is written then, it would go over ideas this session never saw), or
+// the write failed. `unread` keeps the shelf as this session last knew the
+// store, before those changes; the next good read applies the difference
+// (adds, edits and deletes, see rebase) to the saved shelf and writes it.
 let unread: Saved | null = null
 let failureLogged = false
 
@@ -179,18 +178,14 @@ function change($: EngineInterface, fn: Change, write = true): Promise<void> {
     let base = local
     let readOk = false
     let readErr: unknown
+    // The store as this read found it: what a failed write leaves `unread` at.
+    let seen: Saved = local
     const pending = unread
     try {
       const saved = parseSaved(await $.store.get(storeKey))
       readOk = true
-      // The copy the store is compared with: as it stood before reads failed.
-      const mine = pending ?? local
-      let fresh: Saved = saved ?? { items: [], nextId: local.nextId }
-      if (dirty && saved !== undefined) {
-        // Writes failed before: keep this session's ideas the store lacks.
-        const have = new Set(saved.items.map(i => i.id))
-        fresh = { items: [...saved.items, ...mine.items.filter(i => !have.has(i.id))], nextId: saved.nextId }
-      } else if (dirty) fresh = mine
+      const fresh: Saved = saved ?? { items: [], nextId: local.nextId }
+      seen = fresh
       base = pending ? rebase(fresh, pending.items, local.items) : fresh
       base = { items: base.items, nextId: Math.max(base.nextId, local.nextId) }
       unread = null
@@ -209,9 +204,9 @@ function change($: EngineInterface, fn: Change, write = true): Promise<void> {
     } else if (write || pending) {
       try {
         await writeWithRoom($, result)
-        dirty = false
       } catch (err) {
-        dirty = true
+        // Kept here; the next good read applies it to the saved shelf.
+        unread = seen
         logOnce($, `idea-shelf could not save the shelf (${String(err).slice(0, 200)}). Ideas stay for this session only.`)
       }
     }
@@ -350,8 +345,11 @@ const removeIdea = async ($: EngineInterface, id: number): Promise<void> => {
   await placePane($)
 }
 
-const removeIds = async ($: EngineInterface, ids: number[]): Promise<void> => {
-  await change($, (items, n) => ({ items: items.filter(i => !ids.includes(i.id)), nextId: n }))
+// By id AND text: an idea edited meanwhile (here or in another session), or a
+// new idea under a reused id, is not the one that was sent, and stays.
+const removeSent = async ($: EngineInterface, gone: Idea[]): Promise<void> => {
+  const isGone = (i: Idea) => gone.some(g => g.id === i.id && g.text === i.text)
+  await change($, (items, n) => ({ items: items.filter(i => !isGone(i)), nextId: n }))
   await placePane($)
 }
 
@@ -365,7 +363,7 @@ const removeIds = async ($: EngineInterface, ids: number[]): Promise<void> => {
 // The ideas are claimed in one atomic update of the shelf, so two Sends at
 // once never send the same idea twice, and an idea parked meanwhile stays.
 
-type Sent = { ids: number[]; message: string; lines: string[] }
+type Sent = { ids: number[]; items: Idea[]; message: string; lines: string[] }
 const sends = new Map<number, Sent>()
 // Sends made before a /clear: their ideas came back as normal ideas. If the
 // message enters after all, they still leave (else they would go twice).
@@ -377,6 +375,9 @@ const unsentIdeas = async ($: EngineInterface): Promise<ShelfIdea[]> =>
 
 const sendAll = async ($: EngineInterface): Promise<void> => {
   await ensureLoaded($)
+  // The saved shelf as it stands now: ideas another session already sent (and
+  // that left the store) must not go again.
+  await change($, (items, n) => ({ items, nextId: n }), false).catch(() => undefined)
   const no = ++sendCount
   let list: Idea[] = []
   await update($, ideas, current => {
@@ -387,7 +388,7 @@ const sendAll = async ($: EngineInterface): Promise<void> => {
   const ids = list.map(i => i.id)
   const lines = list.map((i, n) => `${n + 1}. ${i.text}`)
   const message = [HEADER, ...lines].join('\n')
-  sends.set(no, { ids, message, lines })
+  sends.set(no, { ids, items: list, message, lines })
   let delivered = false
   try {
     await update($, editing, v => (v !== null && ids.includes(v) ? null : v))
@@ -404,7 +405,7 @@ const sendAll = async ($: EngineInterface): Promise<void> => {
   // Already gone: it entered and left through the prompt or turn hook.
   if (mine === undefined) return
   if (delivered) {
-    await removeIds($, mine.ids)
+    await removeSent($, mine.items)
     return
   }
   if (wasAbandoned) return
@@ -422,7 +423,7 @@ const ideasEntered = async ($: EngineInterface, text: string): Promise<void> => 
     if (!text.includes(one.message) && !one.lines.every(l => textLines.has(l))) continue
     sends.delete(no)
     abandoned.delete(no)
-    await removeIds($, one.ids)
+    await removeSent($, one.items)
     return
   }
 }

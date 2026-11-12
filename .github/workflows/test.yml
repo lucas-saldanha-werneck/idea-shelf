@@ -16,5 +16,7 @@ jobs:
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
-      - run: npm i -g @anthropic-ai/claude-code
+      # Pinned: a new Claude Code release can change the mod runtime. Raise it on purpose,
+      # after `claude plugin test .` passes on the new version.
+      - run: npm i -g @anthropic-ai/claude-code@2.1.322
       - run: claude plugin validate . && claude plugin test .
