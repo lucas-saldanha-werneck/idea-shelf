@@ -1,6 +1,6 @@
 {
   "name": "idea-shelf",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "A side pane to park ideas mid-task without stopping Claude, then send them in one click.",
   "author": {
     "name": "Lucas Saldanha Werneck",

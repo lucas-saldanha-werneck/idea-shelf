@@ -69,7 +69,8 @@ also loads in the desktop app's local Code sessions.
 
 ### Saved per folder
 
-The shelf is saved per working folder in the mod's store (`$.store`, key `ideas:<folder>`). It comes
+The shelf is saved per working folder in the mod's store (`$.store`), one key per idea
+(`shelf:<id>:<folder>`; a folder path too long for a store key is replaced by a short hash). It comes
 back in a new session in the same folder and after reloading the app. Only Delete, or a sent message
 entering the chat, takes an idea off.
 
@@ -81,10 +82,14 @@ entering the chat, takes an idea off.
   ideas are still waiting, they come back as normal ideas, ready to send again. If that earlier
   message does enter after all, its ideas still leave, so they never reach Claude twice. This was
   tested the way the docs describe a `/clear`, not by hand.
-- **Two sessions in the same folder** share one saved shelf. Every change re-reads the saved shelf
-  and applies itself to that, so one session does not write its old copy over the other's ideas.
-  The other session's ideas show up the next time this one changes something. Two changes within the
-  same few milliseconds can still lose one (see Limits).
+- **Two sessions in the same folder** share one saved shelf. Every change re-reads the saved shelf,
+  applies itself to that, and then writes only the ideas it added or edited and deletes only the
+  ones it removed. Claude Code writes each store key under a lock on the store file, re-reading the
+  file first, and ids are unique across sessions, so two sessions saving at the same moment keep both
+  changes: one session never erases the other's ideas. The other session's ideas show up the next
+  time this one changes something. Two sessions editing the same idea at once keep the last edit.
+- Up to 0.3.6 the whole shelf was one key, `ideas:<folder>`. The first look at that folder moves it to
+  a key per idea, then removes the old key.
 - An empty shelf removes its key, so folders you no longer use leave nothing behind. If the store is
   full (Claude Code allows 4 MiB per plugin), empty shelves of other folders are dropped and the save
   is tried again. If it still fails, one line in the transcript says so and the changes stay in this
@@ -138,8 +143,8 @@ top of the others, as in 0.2.
 
 The mod is one hooks module (`hooks/register.tsx`). At session start it loads the saved shelf for
 the folder, registers the `/ideas` command and opens its pane (or not, inside side-stack). Ideas are
-kept in the mod's session state. Each change re-reads the saved shelf, applies itself, and writes the
-result to `$.store`. Send claims the ideas that are not already waiting in one atomic update of the
+kept in the mod's session state. Each change re-reads the saved shelf, applies itself, and writes
+only the difference to `$.store` (a key per idea). Send claims the ideas that are not already waiting in one atomic update of the
 shelf (so two presses never send an idea twice), marks them with that Send's number, builds the
 numbered list and submits it with `$.prompt.submit`. The engine resolves that call with the prompt
 once it has entered. The ideas leave when it resolves, or when the mod sees its own prompt pass the
@@ -168,8 +173,13 @@ From a shell, the same commands work with `claude plugin` in place of `/plugin`.
   state being emptied, so idea-shelf keeps its "loaded for this session" marker in the session state
   itself. 0.3.0 kept it in a module variable and drew an empty shelf after a real `/clear`. The tests
   model both orders.
-- Two sessions saving within the same few milliseconds can still lose one change: the store has no
-  lock across processes.
+- Two sessions saving at the same moment keep both changes because each idea is its own store key and
+  Claude Code writes a key under a lock on the store file (seen in the 2.1.322 engine code, and in a
+  test with two real `claude -p` processes writing 60 times each: one shared key read and written
+  back lost 27 of 120 writes, one key per write lost none). One gap remains: an idea one session
+  edits while another deletes it may come back with the edit.
+- While a session still runs 0.3.6 or older, it keeps writing the old single key, so an idea you
+  deleted in a newer session can come back. Restart every session after updating.
 - The side-stack mode is covered by the tests, with a stand-in for side-stack's flag and pane. The
   way mods share the pane was tried by hand with two throwaway mods in Claude Code 2.1.319;
   idea-shelf itself has not been tried by hand inside side-stack yet.
