@@ -60,7 +60,12 @@ also loads in the desktop app's local Code sessions.
 - A waiting idea has no Edit or Delete button, because the message already carries it. Ideas you
   park meanwhile are not part of that message; Send sends them next.
 - Each Send remembers its own ideas. If two Sends carry the same text, the first message entering
-  removes only the first Send's idea.
+  removes only the first Send's idea. An idea leaves only if it still has the number and the text
+  it was sent with: an idea edited meanwhile (here or in another session) stays.
+- Send reads the saved shelf first, so ideas another session in the same folder already sent (and
+  that left the shelf) are not sent again. Ideas the other session sent that are still waiting are
+  still on the saved shelf (waiting marks are not saved), so pressing Send in both sessions before
+  the first message enters can still send them twice.
 
 ### Saved per folder
 
@@ -77,12 +82,14 @@ entering the chat, takes an idea off.
   message does enter after all, its ideas still leave, so they never reach Claude twice. This was
   tested the way the docs describe a `/clear`, not by hand.
 - **Two sessions in the same folder** share one saved shelf. Every change re-reads the saved shelf
-  and applies itself to that, so one session never overwrites the other's ideas. The other
-  session's ideas show up the next time this one changes something.
+  and applies itself to that, so one session does not write its old copy over the other's ideas.
+  The other session's ideas show up the next time this one changes something. Two changes within the
+  same few milliseconds can still lose one (see Limits).
 - An empty shelf removes its key, so folders you no longer use leave nothing behind. If the store is
   full (Claude Code allows 4 MiB per plugin), empty shelves of other folders are dropped and the save
-  is tried again. If it still fails, one line in the transcript says so and the ideas stay for this
-  session only.
+  is tried again. If it still fails, one line in the transcript says so and the changes stay in this
+  session; the next change that can save applies them (adds, edits and deletes) to the saved shelf,
+  the same way as for a shelf that could not be read (below).
 - If the saved shelf cannot be read, nothing is written (that would go over ideas this session never
   saw). The changes stay in this session, and the next change that can read the store applies them to
   the saved shelf: new ideas get new numbers, and edits and deletes apply to ideas still as this
