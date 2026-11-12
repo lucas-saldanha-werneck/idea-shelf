@@ -15,6 +15,10 @@ const ideasCommand = (args: string) => ({
   presentation: { isFullscreen: false, columns: 80 },
 })
 
+/** The ids of the ideas shown, in shelf order, read off their Delete buttons. */
+const shownIds = async (ui: { findAll: (q: { type: string; text: string }) => Promise<{ key: string | undefined }[]> }): Promise<number[]> =>
+  (await ui.findAll({ type: 'Button', text: 'Delete' })).map(b => Number((b.key ?? '').replace(/^(idea-)?del-/, '')))
+
 test('parks, edits, deletes and sends ideas; send empties the shelf', async ($, on) => {
   const sent: string[] = []
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
@@ -30,10 +34,10 @@ test('parks, edits, deletes and sends ideas; send empties the shelf', async ($, 
     expect(sent.length).toBe(before)
     const ids = (await ui.find({ type: 'Text', text: /add dark mode/ })) !== undefined
     expect(ids).toBe(true)
-    const first = surface === 'terminal' ? 1 : 3
+    const [first, second] = await shownIds(ui)
     await ui.press({ key: `edit-${first}` })
     await ui.input({ key: `edit-input-${first}`, text: 'add dark mode to settings' })
-    await ui.press({ key: `del-${first + 1}` })
+    await ui.press({ key: `del-${second}` })
     expect(await ui.find({ type: 'Text', text: /drop this one/ })).toBeUndefined()
     await ui.press({ key: 'send' })
     expect(sent.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. add dark mode to settings')
@@ -130,9 +134,9 @@ test('ideas parked at the same time get different ids', async ($, on) => {
     $.command.run(ideasCommand('second')),
   ])
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'del-1' })).toBeDefined()
-  expect(await ui.find({ key: 'del-2' })).toBeDefined()
-  await ui.press({ key: 'del-1' })
+  const ids = await shownIds(ui)
+  expect(new Set(ids).size).toBe(2)
+  await ui.press({ key: `del-${ids[0]}` })
   expect(await ui.find({ type: 'Text', text: /second/ })).toBeDefined()
   await ui.unmount()
 })
@@ -159,13 +163,16 @@ type World = {
   // Stands for the host dropping this mod's session state (a /clear).
   stateReset: boolean
   storeBroken: { set: number | 'always'; get: boolean }
+  // Runs once right after the plugin's next read of the store: another
+  // session (another process) saving between this session's read and write.
+  afterRead?: () => void
   clock: ReturnType<typeof mock.clock>
 }
 
 /** A session in /tmp with what sits beneath the plugin: a store the test can
  *  read back (shared by every session, as the real one), a clock, the
  *  side-stack host's flag and /stack command (absent unless turned on). */
-async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts: { below?: boolean; getBroken?: boolean } = {}): Promise<World> {
+async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts: { below?: boolean; getBroken?: boolean; cwd?: string } = {}): Promise<World> {
   const w: World = {
     kept,
     opened: [],
@@ -181,7 +188,9 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
   }
   on('store.get', (_$, e) => {
     if (w.storeBroken.get) throw new Error('store unreadable')
-    return { value: kept[(e as unknown as { key: string }).key] } as never
+    const value = kept[(e as unknown as { key: string }).key]
+    afterRead(w)
+    return { value } as never
   })
   on('store.set', (_$, e) => {
     const one = e as unknown as { key: string; value: unknown }
@@ -197,7 +206,11 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
     delete kept[(e as unknown as { key: string }).key]
     return { value: undefined } as never
   })
-  on('store.keys', () => ({ value: Object.keys(kept) }) as never)
+  on('store.keys', () => {
+    const value = Object.keys(kept)
+    afterRead(w)
+    return { value } as never
+  })
   on('session.id', () => ({ value: w.session.id }) as never)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
@@ -246,8 +259,14 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
       return <Text>SECTION-BELOW</Text>
     })
   }
-  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: opts.cwd ?? '/tmp', surface: 'terminal', isInteractive: true })
   return w
+}
+
+function afterRead(w: World): void {
+  const run = w.afterRead
+  w.afterRead = undefined
+  run?.()
 }
 
 // The test runtime's own timer (not in the kit's typings).
@@ -261,8 +280,18 @@ const settle = async (): Promise<void> => {
   }
 }
 
-const saved = (w: World) => w.kept['ideas:/tmp'] as { items: { id: number; text: string }[]; nextId: number } | undefined
-const texts = (w: World) => saved(w)?.items.map(i => i.text) ?? []
+type StoredIdea = { id: number; text: string }
+/** The /tmp shelf as the store holds it: the old single key `ideas:/tmp`
+ *  and one `shelf:<id>:/tmp` key per idea, in id order. */
+const stored = (kept: Record<string, unknown>): StoredIdea[] => {
+  const legacy = (kept['ideas:/tmp'] as { items: StoredIdea[] } | undefined)?.items ?? []
+  const own = Object.entries(kept)
+    .map(([key, value]) => ({ m: /^shelf:(\d+):\/tmp$/.exec(key), value: value as { text: string } }))
+    .filter(x => x.m !== null)
+    .map(x => ({ id: Number(x.m![1]), text: x.value.text }))
+  return [...legacy, ...own].sort((a, b) => a.id - b.id)
+}
+const texts = (w: World) => stored(w.kept).map(i => i.text)
 
 /** Stands for the app: the prompt enters, but the submit's promise never settles. */
 function neverSettles(on: On): string[] {
@@ -283,7 +312,7 @@ test('parked ideas are saved per folder, and Delete saves too (terminal and desk
     await ui.input({ key: 'new', text: `rename the file ${surface}` })
     await settle()
     expect(texts(w).slice(-2)).toEqual([`call the supplier ${surface}`, `rename the file ${surface}`])
-    const firstId = saved(w)!.items.at(-2)!.id
+    const firstId = stored(w.kept).at(-2)!.id
     await ui.press({ key: `del-${firstId}` })
     await settle()
     expect(texts(w).includes(`call the supplier ${surface}`)).toBe(false)
@@ -292,7 +321,7 @@ test('parked ideas are saved per folder, and Delete saves too (terminal and desk
   }
 })
 
-test('a new session in the same folder gets the ideas back as normal ideas; numbering goes on', async ($, on) => {
+test('a new session in the same folder gets the ideas back as normal ideas; the old single key moves to a key per idea', async ($, on) => {
   const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 3, text: 'add dark mode' }], nextId: 4 } })
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...PANE })
@@ -301,8 +330,12 @@ test('a new session in the same folder gets the ideas back as normal ideas; numb
     expect(await ui.find({ key: 'send' })).toBeDefined()
     await ui.unmount()
   }
+  // Saved up to 0.3.6 as one key: moved to a key per idea on the first look.
+  expect('ideas:/tmp' in w.kept).toBe(false)
+  expect(w.kept['shelf:3:/tmp']).toEqual({ text: 'add dark mode' })
   await $.command.run(ideasCommand('second idea'))
-  expect(saved(w)?.items.at(-1)).toEqual({ id: 4, text: 'second idea' })
+  expect(texts(w)).toEqual(['add dark mode', 'second idea'])
+  expect(stored(w.kept)[1].id).toBeGreaterThan(3)
 })
 
 test('/clear (session ends, new id, no session.start): the shelf stays saved and comes back, waiting marks gone', async ($, on) => {
@@ -395,7 +428,7 @@ test('an idea with line breaks is kept on one line, so it leaves when its messag
   await settle()
   expect(await ui.find({ type: 'Text', text: /rename the config/ })).toBeUndefined()
   // An empty shelf leaves no key behind in the shared store.
-  expect(saved(w)).toBeUndefined()
+  expect(Object.keys(w.kept).filter(k => k.endsWith('/tmp'))).toEqual([])
   await ui.unmount()
 })
 
@@ -435,21 +468,54 @@ test('two sends of the same text: each message removes only its own idea; a drop
 test('another session in the same folder: its ideas stay when this one saves', async ($, on) => {
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 1, text: 'a' }], nextId: 2 } })
-  w.kept['ideas:/tmp'] = { items: [{ id: 1, text: 'a' }, { id: 2, text: 'from other session' }], nextId: 3 }
+  w.kept['shelf:2:/tmp'] = { text: 'from other session' }
   await $.command.run(ideasCommand('mine'))
   await settle()
-  expect(saved(w)).toEqual({
-    items: [
-      { id: 1, text: 'a' },
-      { id: 2, text: 'from other session' },
-      { id: 3, text: 'mine' },
-    ],
-    nextId: 4,
-  })
+  expect(texts(w)).toEqual(['a', 'from other session', 'mine'])
   // And this session now shows the other session's idea too.
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'desktop', ...PANE })
   expect(await ui.find({ type: 'Text', text: /from other session/ })).toBeDefined()
   await ui.unmount()
+})
+
+// IS-02 (audit): the saved shelf was read, changed and written back as one
+// value; another process saving between that read and that write lost its change.
+test('two sessions saving at the same moment: neither loses the other\'s idea', async ($, on) => {
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  const w = await start($, on)
+  await $.command.run(ideasCommand('mine first'))
+  await settle()
+  // Another session parks an idea right after this one read the store, the
+  // way a second copy of this mod saves: the whole shelf in one key (read,
+  // add, write back), or one key of its own per idea.
+  w.afterRead = () => {
+    const whole = w.kept['ideas:/tmp'] as { items: StoredIdea[]; nextId: number } | undefined
+    if (whole !== undefined) {
+      w.kept['ideas:/tmp'] = { items: [...whole.items, { id: whole.nextId, text: 'from the other session' }], nextId: whole.nextId + 1 }
+    } else {
+      w.kept['shelf:9000000000000:/tmp'] = { text: 'from the other session' }
+    }
+  }
+  await $.command.run(ideasCommand('mine second'))
+  await settle()
+  expect(w.afterRead).toBeUndefined()
+  expect([...texts(w)].sort()).toEqual(['from the other session', 'mine first', 'mine second'])
+  // This session shows it after its next change.
+  await $.command.run(ideasCommand('mine third'))
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /from the other session/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a folder path too long for a store key still saves (keys stay within 256 characters)', async ($, on) => {
+  const w = await start($, on, {}, { cwd: `/${'deep/'.repeat(60)}project` })
+  await $.command.run(ideasCommand('long path idea'))
+  await settle()
+  const keys = Object.keys(w.kept)
+  expect(keys.length).toBe(1)
+  expect(keys[0].startsWith('shelf:')).toBe(true)
+  expect(keys[0].length <= 256).toBe(true)
+  expect(w.kept[keys[0]]).toEqual({ text: 'long path idea' })
 })
 
 // Audit: a store that could not be read made the next save write this
@@ -461,7 +527,8 @@ test('a store that cannot be read is never written over; the change is saved onc
   const w = await start($, on, { 'ideas:/tmp': JSON.parse(JSON.stringify(before)) }, { getBroken: true })
   await $.command.run(ideasCommand('mine'))
   await settle()
-  expect(saved(w)).toEqual(before)
+  expect(w.kept['ideas:/tmp']).toEqual(before)
+  expect(texts(w)).toEqual(['a', 'b'])
   expect(w.logs.length).toBe(1)
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
   expect(await ui.find({ type: 'Text', text: /mine/ })).toBeDefined()
@@ -470,22 +537,15 @@ test('a store that cannot be read is never written over; the change is saved onc
   w.storeBroken.get = false
   await $.command.run(ideasCommand('more'))
   await settle()
-  expect(saved(w)).toEqual({
-    items: [
-      { id: 1, text: 'a' },
-      { id: 2, text: 'b' },
-      { id: 3, text: 'mine' },
-      { id: 4, text: 'more' },
-    ],
-    nextId: 5,
-  })
+  expect(texts(w)).toEqual(['a', 'b', 'mine', 'more'])
+  expect('ideas:/tmp' in w.kept).toBe(false)
 })
 
 test('edits and deletes made while the store is unreadable are kept; another session\'s ideas stay', async ($, on) => {
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }], nextId: 3 } })
   // Another session adds one; then the store stops answering.
-  w.kept['ideas:/tmp'] = { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }, { id: 3, text: 'other' }], nextId: 4 }
+  w.kept['shelf:3:/tmp'] = { text: 'other' }
   w.storeBroken.get = true
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
   await ui.press({ key: 'del-1' })
@@ -497,15 +557,7 @@ test('edits and deletes made while the store is unreadable are kept; another ses
   w.storeBroken.get = false
   await $.command.run(ideasCommand('more'))
   await settle()
-  expect(saved(w)).toEqual({
-    items: [
-      { id: 2, text: 'b edited' },
-      { id: 3, text: 'other' },
-      { id: 4, text: 'mine' },
-      { id: 5, text: 'more' },
-    ],
-    nextId: 6,
-  })
+  expect(texts(w)).toEqual(['b edited', 'other', 'mine', 'more'])
   expect(await ui.find({ type: 'Text', text: /other/ })).toBeDefined()
   await ui.unmount()
 })
@@ -601,7 +653,7 @@ test('stacked: own pane closed, section headed Ideas with the full send flow, se
     expect(await ui.find({ type: 'Text', text: /SECTION-BELOW/ })).toBeDefined()
     await ui.input({ key: 'idea-new', text: `idea on ${surface}` })
     expect(await ui.find({ type: 'Text', text: new RegExp(`idea on ${surface}`) })).toBeDefined()
-    const id = saved(w)!.items.at(-1)!.id
+    const id = stored(w.kept).at(-1)!.id
     await ui.press({ key: `idea-edit-${id}` })
     await ui.input({ key: `idea-edit-input-${id}`, text: `edited on ${surface}` })
     expect(await ui.find({ type: 'Text', text: new RegExp(`edited on ${surface}`) })).toBeDefined()
@@ -796,7 +848,8 @@ test('edits and deletes made while saving fails are kept once saving works again
   await ui.input({ key: 'edit-input-2', text: 'b edited' })
   await $.command.run(ideasCommand('mine'))
   await settle()
-  expect(texts(w)).toEqual(['a', 'b'])
+  // Only writing fails here: the delete is saved, the edit and the new idea wait.
+  expect(texts(w)).toEqual(['b'])
   w.storeBroken.set = 0
   await $.command.run(ideasCommand('more'))
   await settle()
@@ -813,8 +866,8 @@ test('a sent idea that another session edited meanwhile stays when the message e
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
   void ui.press({ key: 'send' })
   await settle()
-  const id = saved(w)!.items[0].id
-  w.kept['ideas:/tmp'] = { items: [{ id, text: 'fix the tests and the docs' }], nextId: id + 1 }
+  const id = stored(w.kept)[0].id
+  w.kept[`shelf:${id}:/tmp`] = { text: 'fix the tests and the docs' }
   await $.turn.start({ turnId: 't2', text: `The idea-shelf plugin sent a message: ${entered.at(-1)}` })
   await settle()
   expect(texts(w)).toEqual(['fix the tests and the docs'])
@@ -829,7 +882,7 @@ test('Send re-reads the saved shelf: ideas another session already sent do not g
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
   expect(await ui.find({ type: 'Text', text: /• x/ })).toBeDefined()
   // The other session sent x; it left the saved shelf.
-  w.kept['ideas:/tmp'] = { items: [{ id: 2, text: 'y' }], nextId: 3 }
+  delete w.kept['shelf:1:/tmp']
   void ui.press({ key: 'send' })
   await settle()
   expect(entered.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. y')

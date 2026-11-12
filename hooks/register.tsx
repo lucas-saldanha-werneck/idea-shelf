@@ -73,19 +73,34 @@ function later($: EngineInterface, fn: () => void): void {
 }
 
 // ---- Saved shelf -------------------------------------------------------------
-// The shelf is kept in $.store per folder. The store is one file shared by
-// every session of every folder, so a change never writes this session's copy
-// over it: each change re-reads the saved shelf, applies itself to that, and
-// writes the result (another session's ideas stay). Changes run one after
-// another. An empty shelf removes its key. The "sent" marks are never saved.
+// The shelf is kept in $.store per folder, one key per idea:
+// `shelf:<id>:<folder>` holding `{ text }`. The store is one file shared by
+// every session of every folder, and Claude Code writes each key under a lock
+// on that file, re-reading it first, so two sessions saving at the same moment
+// keep both writes. A change therefore never writes the whole shelf back: it
+// re-reads the saved shelf, applies itself to that, and then writes only the
+// ideas it added or edited and deletes only the ones it removed. Another
+// session's idea is never in that write, so it is never lost. Ids are unique
+// across sessions (the time in ms, three random digits, then counting up), so
+// two sessions never take the same key. Changes in this session run one after
+// another. An empty shelf leaves no key. The "sent" marks are never saved.
+// Up to 0.3.6 the whole shelf was one key, `ideas:<folder>`: it is read too,
+// moved to keys of its own on the first look, and then removed.
 
 type Saved = { items: Idea[]; nextId: number }
+/** The saved shelf as one read found it: the shelf, what the per-idea keys
+ *  hold, and whether the old single key is still there. */
+type Loaded = { saved: Saved; keyed: Map<number, string>; hasOld: boolean }
 
+const SHELF = 'shelf:'
+// Claude Code allows store keys of 256 characters at most.
+const MAX_KEY = 256
 let storeKey = 'ideas:default'
+let folderPart = 'default'
 let chain: Promise<void> = Promise.resolve()
 // Changes this session holds that the store lacks: the store could not be read
 // (nothing is written then, it would go over ideas this session never saw), or
-// the write failed. `unread` keeps the shelf as this session last knew the
+// a write failed. `unread` keeps the shelf as this session last knew the
 // store, before those changes; the next good read applies the difference
 // (adds, edits and deletes, see rebase) to the saved shelf and writes it.
 let unread: Saved | null = null
@@ -107,6 +122,36 @@ function logOnce($: EngineInterface, text: string): void {
 // variable then says "loaded" while the shelf is empty (seen in a real
 // session, 0.3.0). A marker in $.state goes when the state goes.
 
+/** A short stable name for a folder path too long to fit in a key. */
+function hashed(text: string): string {
+  let a = 0x811c9dc5
+  let b = 0x01000193
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193) >>> 0
+    b = Math.imul(b ^ c, 0x5bd1e995) >>> 0
+  }
+  return `#${a.toString(16)}${b.toString(16)}`
+}
+
+function setFolder(cwd: string): void {
+  storeKey = `ideas:${cwd}`
+  // A path never starts with '#', so a hashed name never meets a real one.
+  folderPart = `${SHELF}${Number.MAX_SAFE_INTEGER}:${cwd}`.length <= MAX_KEY ? cwd : hashed(cwd)
+}
+
+const ideaKey = (id: number): string => `${SHELF}${id}:${folderPart}`
+
+/** The idea id in `key` when it is one of this folder's keys. */
+function ownId(key: string): number | undefined {
+  if (!key.startsWith(SHELF)) return undefined
+  const rest = key.slice(SHELF.length)
+  const colon = rest.indexOf(':')
+  if (colon < 1 || rest.slice(colon + 1) !== folderPart) return undefined
+  const id = Number(rest.slice(0, colon))
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined
+}
+
 function parseSaved(raw: unknown): Saved | undefined {
   if (raw === undefined || raw === null || typeof raw !== 'object') return undefined
   const value = raw as { items?: unknown; nextId?: unknown }
@@ -124,86 +169,140 @@ function parseSaved(raw: unknown): Saved | undefined {
   return { items: items.slice(-MAX_IDEAS), nextId: top }
 }
 
-async function writeSaved($: EngineInterface, saved: Saved): Promise<void> {
-  if (saved.items.length === 0) await $.store.delete(storeKey)
-  else await $.store.set(storeKey, saved)
+/** Reads this folder's saved shelf: its own keys, and the old single key. */
+async function readShelf($: EngineInterface): Promise<Loaded> {
+  const keys = await $.store.keys()
+  const keyed = new Map<number, string>()
+  for (const key of keys) {
+    const id = ownId(key)
+    if (id === undefined) continue
+    const raw = (await $.store.get(key)) as { text?: unknown } | undefined
+    // Gone since the listing (another session deleted it), or not an idea.
+    const text = typeof raw?.text === 'string' ? clean(raw.text) : ''
+    if (text !== '') keyed.set(id, text)
+  }
+  const items: Idea[] = [...keyed].map(([id, text]) => ({ id, text }))
+  const hasOld = keys.includes(storeKey)
+  if (hasOld) {
+    for (const one of parseSaved(await $.store.get(storeKey))?.items ?? []) {
+      if (!keyed.has(one.id)) items.push(one)
+    }
+  }
+  items.sort((a, b) => a.id - b.id)
+  return { saved: { items: items.slice(-MAX_IDEAS), nextId: Math.max(1, ...items.map(i => i.id + 1)) }, keyed, hasOld }
 }
 
-// A full store (4 MiB in all): empty shelves of other folders are dropped
-// before one more try. Reported once per process.
-async function writeWithRoom($: EngineInterface, saved: Saved): Promise<void> {
+// A full store (4 MiB in all): empty shelves of other folders (the old single
+// keys) are dropped before one more try. Reported once per process.
+async function setWithRoom($: EngineInterface, key: string, value: unknown): Promise<void> {
   try {
-    await writeSaved($, saved)
+    await $.store.set(key, value)
     return
   } catch (first) {
     try {
-      for (const key of await $.store.keys()) {
-        if (key === storeKey || !key.startsWith('ideas:')) continue
-        const other = parseSaved(await $.store.get(key))
-        if (other === undefined || other.items.length === 0) await $.store.delete(key)
+      for (const other of await $.store.keys()) {
+        if (other === storeKey || !other.startsWith('ideas:')) continue
+        const shelf = parseSaved(await $.store.get(other))
+        if (shelf === undefined || shelf.items.length === 0) await $.store.delete(other)
       }
-      await writeSaved($, saved)
+      await $.store.set(key, value)
     } catch {
       throw first
     }
   }
 }
 
+/** Writes the difference between what the keys held and `items`: added and
+ *  edited ideas are set, removed ones deleted, and the old single key goes
+ *  last. A new id another session took meanwhile moves up. Returns `items`
+ *  with the ids as saved. */
+async function writeShelf($: EngineInterface, loaded: Loaded, items: Idea[]): Promise<Idea[]> {
+  const out: Idea[] = []
+  for (const one of items) {
+    let id = one.id
+    if (loaded.keyed.get(id) !== one.text) {
+      const isNew = !loaded.keyed.has(id) && !loaded.saved.items.some(i => i.id === id)
+      if (isNew) {
+        while (out.some(i => i.id === id) || (await $.store.get(ideaKey(id))) !== undefined) id++
+      }
+      await setWithRoom($, ideaKey(id), { text: one.text })
+    }
+    out.push(id === one.id ? one : { id, text: one.text })
+  }
+  const kept = new Set(out.map(i => i.id))
+  for (const id of loaded.keyed.keys()) if (!kept.has(id)) await $.store.delete(ideaKey(id))
+  if (loaded.hasOld) await $.store.delete(storeKey)
+  return out
+}
+
+/** The lowest id a new idea may take now: unique across sessions. */
+async function idFloor($: EngineInterface): Promise<number> {
+  let now: number
+  try {
+    now = await $.clock.now()
+  } catch {
+    now = Date.now()
+  }
+  return Math.floor(now) * 1000 + Math.floor(Math.random() * 1000)
+}
+
 /** `saved` with this session's changes from `before` to `now`: an idea new
- *  here is added with a new id (its local id may be taken), an edit or delete
- *  applies only to an idea the store still holds as this session last saw it. */
+ *  here is added with a new id (unless the store already holds it, saved by
+ *  an earlier write that stopped halfway), an edit or delete applies only to
+ *  an idea the store still holds as this session last saw it. */
 function rebase(saved: Saved, before: Idea[], now: Idea[]): Saved {
   const was = new Map(before.map(i => [i.id, i.text]))
   const is = new Map(now.map(i => [i.id, i.text]))
+  const has = new Map(saved.items.map(i => [i.id, i.text]))
   const items: Idea[] = []
   for (const i of saved.items) {
     if (was.get(i.id) !== i.text) items.push(i)
     else if (is.has(i.id)) items.push({ id: i.id, text: is.get(i.id)! })
   }
   let next = saved.nextId
-  for (const i of now) if (!was.has(i.id)) items.push({ id: next++, text: i.text })
+  for (const i of now) if (!was.has(i.id) && has.get(i.id) !== i.text) items.push({ id: next++, text: i.text })
   return { items, nextId: next }
 }
 
 type Change = (items: Idea[], next: number) => Saved
 
 /** Applies `fn` to the saved shelf (or this session's, without a store) and
- *  shows the result; `write: false` only loads. */
+ *  shows the result; `write: false` only loads (and moves an old single key). */
 function change($: EngineInterface, fn: Change, write = true): Promise<void> {
   const run = chain.then(async () => {
     // Fresh values: a read() answers as of the dispatch's start, and another
     // dispatch may have changed the shelf since; an update that keeps the
     // value resolves with what stands now.
     const local: Saved = { items: (await update($, ideas, c => c)).map(plain), nextId: await update($, nextId, n => n) }
+    const floor = await idFloor($)
     let base = local
-    let readOk = false
+    let loaded: Loaded | undefined
     let readErr: unknown
     // The store as this read found it: what a failed write leaves `unread` at.
     let seen: Saved = local
     const pending = unread
     try {
-      const saved = parseSaved(await $.store.get(storeKey))
-      readOk = true
-      const fresh: Saved = saved ?? { items: [], nextId: local.nextId }
+      loaded = await readShelf($)
+      const fresh: Saved = { items: loaded.saved.items, nextId: Math.max(loaded.saved.nextId, local.nextId, floor) }
       seen = fresh
       base = pending ? rebase(fresh, pending.items, local.items) : fresh
-      base = { items: base.items, nextId: Math.max(base.nextId, local.nextId) }
       unread = null
     } catch (err) {
       // No store, or not readable now: this session's shelf is all there is.
       readErr = err
     }
-    const result = fn(base.items, base.nextId)
+    const result = fn(base.items, Math.max(base.nextId, floor))
     result.items = result.items.slice(-MAX_IDEAS)
-    if (!readOk) {
+    if (loaded === undefined) {
       if (write) {
         // Never written over the store unseen: kept here until the next read.
         unread = unread ?? local
         logOnce($, `idea-shelf could not read the saved shelf (${String(readErr).slice(0, 200)}). Changes stay in this session and are saved once it can be read.`)
       }
-    } else if (write || pending) {
+    } else if (write || pending || loaded.hasOld) {
       try {
-        await writeWithRoom($, result)
+        result.items = await writeShelf($, loaded, result.items)
+        result.nextId = Math.max(result.nextId, ...result.items.map(i => i.id + 1))
       } catch (err) {
         // Kept here; the next good read applies it to the saved shelf.
         unread = seen
@@ -265,7 +364,7 @@ async function shelfForRender($: EngineInterface): Promise<ShelfIdea[] | undefin
   if (!(await needsLoad($))) return undefined
   later($, () => void ensureLoaded($).catch(() => undefined))
   try {
-    return parseSaved(await $.store.get(storeKey))?.items ?? []
+    return (await readShelf($)).saved.items
   } catch {
     return undefined
   }
@@ -528,7 +627,7 @@ function fillSlot(node: unknown, section: unknown): unknown {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    storeKey = `ideas:${e.cwd}`
+    setFolder(e.cwd)
     await ensureLoaded($, true)
     await registerCommand($)
     // Plugin load order is unknown: the host may set its flag after this
