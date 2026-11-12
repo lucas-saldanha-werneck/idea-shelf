@@ -83,6 +83,10 @@ entering the chat, takes an idea off.
   full (Claude Code allows 4 MiB per plugin), empty shelves of other folders are dropped and the save
   is tried again. If it still fails, one line in the transcript says so and the ideas stay for this
   session only.
+- If the saved shelf cannot be read, nothing is written (that would go over ideas this session never
+  saw). The changes stay in this session, and the next change that can read the store applies them to
+  the saved shelf: new ideas get new numbers, and edits and deletes apply to ideas still as this
+  session last saw them.
 
 Commands:
 

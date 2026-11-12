@@ -158,14 +158,14 @@ type World = {
   host: { command: boolean; foreign: boolean }
   // Stands for the host dropping this mod's session state (a /clear).
   stateReset: boolean
-  storeBroken: { set: number | 'always' }
+  storeBroken: { set: number | 'always'; get: boolean }
   clock: ReturnType<typeof mock.clock>
 }
 
 /** A session in /tmp with what sits beneath the plugin: a store the test can
  *  read back (shared by every session, as the real one), a clock, the
  *  side-stack host's flag and /stack command (absent unless turned on). */
-async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts: { below?: boolean } = {}): Promise<World> {
+async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts: { below?: boolean; getBroken?: boolean } = {}): Promise<World> {
   const w: World = {
     kept,
     opened: [],
@@ -176,10 +176,13 @@ async function start($: Engine, on: On, kept: Record<string, unknown> = {}, opts
     session: { id: 's1' },
     host: { command: false, foreign: false },
     stateReset: false,
-    storeBroken: { set: 0 },
+    storeBroken: { set: 0, get: opts.getBroken === true },
     clock: mock.clock(on, { now: 1_000_000 }),
   }
-  on('store.get', (_$, e) => ({ value: kept[(e as unknown as { key: string }).key] }) as never)
+  on('store.get', (_$, e) => {
+    if (w.storeBroken.get) throw new Error('store unreadable')
+    return { value: kept[(e as unknown as { key: string }).key] } as never
+  })
   on('store.set', (_$, e) => {
     const one = e as unknown as { key: string; value: unknown }
     if (w.storeBroken.set === 'always') throw new Error('store over 4 MiB')
@@ -446,6 +449,64 @@ test('another session in the same folder: its ideas stay when this one saves', a
   // And this session now shows the other session's idea too.
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'desktop', ...PANE })
   expect(await ui.find({ type: 'Text', text: /from other session/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// Audit: a store that could not be read made the next save write this
+// session's copy over the saved ideas.
+test('a store that cannot be read is never written over; the change is saved once it can be read', async ($, on) => {
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  const before = { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }], nextId: 3 }
+  // The load at start fails too: this session starts with an empty copy.
+  const w = await start($, on, { 'ideas:/tmp': JSON.parse(JSON.stringify(before)) }, { getBroken: true })
+  await $.command.run(ideasCommand('mine'))
+  await settle()
+  expect(saved(w)).toEqual(before)
+  expect(w.logs.length).toBe(1)
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: /mine/ })).toBeDefined()
+  await ui.unmount()
+  // Readable again: the next change merges, and nothing is lost (new ids for the new idea).
+  w.storeBroken.get = false
+  await $.command.run(ideasCommand('more'))
+  await settle()
+  expect(saved(w)).toEqual({
+    items: [
+      { id: 1, text: 'a' },
+      { id: 2, text: 'b' },
+      { id: 3, text: 'mine' },
+      { id: 4, text: 'more' },
+    ],
+    nextId: 5,
+  })
+})
+
+test('edits and deletes made while the store is unreadable are kept; another session\'s ideas stay', async ($, on) => {
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  const w = await start($, on, { 'ideas:/tmp': { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }], nextId: 3 } })
+  // Another session adds one; then the store stops answering.
+  w.kept['ideas:/tmp'] = { items: [{ id: 1, text: 'a' }, { id: 2, text: 'b' }, { id: 3, text: 'other' }], nextId: 4 }
+  w.storeBroken.get = true
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'del-1' })
+  await ui.press({ key: 'edit-2' })
+  await ui.input({ key: 'edit-input-2', text: 'b edited' })
+  await $.command.run(ideasCommand('mine'))
+  await settle()
+  expect(texts(w)).toEqual(['a', 'b', 'other'])
+  w.storeBroken.get = false
+  await $.command.run(ideasCommand('more'))
+  await settle()
+  expect(saved(w)).toEqual({
+    items: [
+      { id: 2, text: 'b edited' },
+      { id: 3, text: 'other' },
+      { id: 4, text: 'mine' },
+      { id: 5, text: 'more' },
+    ],
+    nextId: 6,
+  })
+  expect(await ui.find({ type: 'Text', text: /other/ })).toBeDefined()
   await ui.unmount()
 })
 
