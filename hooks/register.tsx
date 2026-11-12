@@ -85,7 +85,22 @@ let storeKey = 'ideas:default'
 let chain: Promise<void> = Promise.resolve()
 // The last write failed: this session's copy holds ideas the store lacks.
 let dirty = false
+// The store could not be read: nothing is written (it would go over ideas this
+// session never saw). The changes stay in this session's copy, and `unread`
+// keeps the shelf as it was before them; the next read applies the difference
+// to the saved shelf (see rebase) and writes it.
+let unread: Saved | null = null
 let failureLogged = false
+
+function logOnce($: EngineInterface, text: string): void {
+  if (failureLogged) return
+  failureLogged = true
+  try {
+    $.ui.log(text)
+  } catch {
+    // Nowhere to say it.
+  }
+}
 // The session the shelf was loaded for is kept in the session state itself
 // (`loadedFor`), not in a module variable. On a real /clear the engine goes on
 // under a new session id, empties $.state and keeps module variables, and
@@ -135,6 +150,22 @@ async function writeWithRoom($: EngineInterface, saved: Saved): Promise<void> {
   }
 }
 
+/** `saved` with this session's changes from `before` to `now`: an idea new
+ *  here is added with a new id (its local id may be taken), an edit or delete
+ *  applies only to an idea the store still holds as this session last saw it. */
+function rebase(saved: Saved, before: Idea[], now: Idea[]): Saved {
+  const was = new Map(before.map(i => [i.id, i.text]))
+  const is = new Map(now.map(i => [i.id, i.text]))
+  const items: Idea[] = []
+  for (const i of saved.items) {
+    if (was.get(i.id) !== i.text) items.push(i)
+    else if (is.has(i.id)) items.push({ id: i.id, text: is.get(i.id)! })
+  }
+  let next = saved.nextId
+  for (const i of now) if (!was.has(i.id)) items.push({ id: next++, text: i.text })
+  return { items, nextId: next }
+}
+
 type Change = (items: Idea[], next: number) => Saved
 
 /** Applies `fn` to the saved shelf (or this session's, without a store) and
@@ -146,34 +177,42 @@ function change($: EngineInterface, fn: Change, write = true): Promise<void> {
     // value resolves with what stands now.
     const local: Saved = { items: (await update($, ideas, c => c)).map(plain), nextId: await update($, nextId, n => n) }
     let base = local
+    let readOk = false
+    let readErr: unknown
+    const pending = unread
     try {
       const saved = parseSaved(await $.store.get(storeKey))
-      if (!dirty) base = saved === undefined ? { items: [], nextId: local.nextId } : saved
-      else if (saved !== undefined) {
+      readOk = true
+      // The copy the store is compared with: as it stood before reads failed.
+      const mine = pending ?? local
+      let fresh: Saved = saved ?? { items: [], nextId: local.nextId }
+      if (dirty && saved !== undefined) {
         // Writes failed before: keep this session's ideas the store lacks.
         const have = new Set(saved.items.map(i => i.id))
-        base = { items: [...saved.items, ...local.items.filter(i => !have.has(i.id))], nextId: saved.nextId }
-      }
+        fresh = { items: [...saved.items, ...mine.items.filter(i => !have.has(i.id))], nextId: saved.nextId }
+      } else if (dirty) fresh = mine
+      base = pending ? rebase(fresh, pending.items, local.items) : fresh
       base = { items: base.items, nextId: Math.max(base.nextId, local.nextId) }
-    } catch {
-      // No store: this session's shelf is all there is.
+      unread = null
+    } catch (err) {
+      // No store, or not readable now: this session's shelf is all there is.
+      readErr = err
     }
     const result = fn(base.items, base.nextId)
     result.items = result.items.slice(-MAX_IDEAS)
-    if (write) {
+    if (!readOk) {
+      if (write) {
+        // Never written over the store unseen: kept here until the next read.
+        unread = unread ?? local
+        logOnce($, `idea-shelf could not read the saved shelf (${String(readErr).slice(0, 200)}). Changes stay in this session and are saved once it can be read.`)
+      }
+    } else if (write || pending) {
       try {
         await writeWithRoom($, result)
         dirty = false
       } catch (err) {
         dirty = true
-        if (!failureLogged) {
-          failureLogged = true
-          try {
-            $.ui.log(`idea-shelf could not save the shelf (${String(err).slice(0, 200)}). Ideas stay for this session only.`)
-          } catch {
-            // Nowhere to say it.
-          }
-        }
+        logOnce($, `idea-shelf could not save the shelf (${String(err).slice(0, 200)}). Ideas stay for this session only.`)
       }
     }
     // Shown: the result, keeping this session's "sent" marks on ideas it still has.
