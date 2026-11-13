@@ -3,6 +3,7 @@
 [![CI](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml/badge.svg)](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml)
 [![License](https://img.shields.io/github/license/lucas-saldanha-werneck/idea-shelf)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.3.8-blue)](CHANGELOG.md)
+[![plugin score (proposal)](https://img.shields.io/badge/plugin%20score%20(proposal)-98.8%20A-brightgreen)](https://github.com/NVIDIA/SkillEvaluator/issues/508)
 
 A Claude Code mod that gives you a side pane for ideas that come up while Claude works. You park an
 idea there without starting a new turn, so Claude keeps going on the current task. When you are
