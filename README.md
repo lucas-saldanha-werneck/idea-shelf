@@ -1,12 +1,10 @@
 # idea-shelf
 
-![SkillEvaluator: 7/8 checks](https://img.shields.io/badge/SkillEvaluator-7%2F8%20checks-yellow)
-
 A Claude Code mod that gives you a side pane for ideas that come up while Claude works. You park an
 idea there without starting a new turn, so Claude keeps going on the current task. When you are
 ready, one press sends the whole list.
 
-[![idea-shelf demo: tap to open the video](https://github.com/user-attachments/assets/7cfd702d-5654-4e51-887b-8a91ffdd5997)](docs/demo.mp4)
+[![idea-shelf demo: tap to open the video](https://github.com/user-attachments/assets/7cfd702d-5654-4e51-887b-8a91ffdd5997)](https://lucas-saldanha-werneck.github.io/idea-shelf/demo.mp4)
 
 <table>
 <tr>
