@@ -8,10 +8,11 @@ security problem.
 
 ## Supported versions
 
-Only the latest release (0.3.8) is supported. Fixes go into a new release.
+Only the latest release is supported. Fixes go into a new release.
 
 ## What idea-shelf accesses
 
-- Keeps your parked ideas in Claude Code's own plugin store (one key per idea and folder). It reads and writes no other files.
-- Makes no network requests and starts no programs.
-- Nothing reaches the model until you press Send; then one message with the ideas is submitted, marked as sent by the plugin.
+- Keeps your parked ideas as plain text in Claude Code's own plugin store, one key per idea, named with the folder path (or a hash of it when the path is long). It reads and writes no other files.
+- Sees the text of each prompt and turn start in the session, only to check whether its own message got in. It keeps nothing from them.
+- Makes no network requests and starts no programs. It lists the session's slash commands and runs side-stack's `/stack` when that plugin is installed.
+- Nothing reaches the model until you press Send or type `/ideas send`; then one message with the ideas is submitted, marked as sent by the plugin.
