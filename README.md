@@ -110,6 +110,14 @@ Commands:
 
 There are no settings and nothing else to install.
 
+## Examples
+
+- Mid-task you think of something: type "add dark mode to settings" in the shelf field and press
+  Enter. Claude is not interrupted and the idea shows in the list.
+- You open the pane at any width with `/ideas`, fix a typo with Edit, or remove an idea with Delete.
+- When ready you press Send 2. Claude gets one message, `Ideas I parked on my idea shelf while we
+  worked:` followed by the numbered ideas, once its current turn ends.
+
 ## Works alone or inside side-stack
 
 The desktop app and the terminal show each mod's pane as a separate tab, one at a time. If you also
