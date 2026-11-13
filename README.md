@@ -1,5 +1,9 @@
 # idea-shelf
 
+[![CI](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml/badge.svg)](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml)
+[![License](https://img.shields.io/github/license/lucas-saldanha-werneck/idea-shelf)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.3.8-blue)](CHANGELOG.md)
+
 A Claude Code mod that gives you a side pane for ideas that come up while Claude works. You park an
 idea there without starting a new turn, so Claude keeps going on the current task. When you are
 ready, one press sends the whole list.
@@ -220,3 +224,7 @@ The idea comes from the "Idea Shelf" mod in the AI LABS video [Claude Mods Are I
 MIT. See `LICENSE`.
 
 Built with Claude Code
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
