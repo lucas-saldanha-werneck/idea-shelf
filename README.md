@@ -4,6 +4,16 @@ A Claude Code mod that gives you a side pane for ideas that come up while Claude
 idea there without starting a new turn, so Claude keeps going on the current task. When you are
 ready, one press sends the whole list.
 
+https://github.com/user-attachments/assets/e84a5991-acbb-43d4-beb0-0d2b798c8f32
+
+<table>
+<tr>
+<td align="center"><img src="https://github.com/user-attachments/assets/31f990f1-c468-4f6b-9c8e-aad15822d217" alt="The ideas pane beside a terminal while Claude keeps working" width="320"><br>In the terminal</td>
+<td align="center"><img src="https://github.com/user-attachments/assets/27852a6b-1214-4071-9b52-0dbe90e46dfd" alt="The ideas pane in the Claude desktop app" width="320"><br>In the desktop app</td>
+<td align="center"><img src="https://github.com/user-attachments/assets/2015d710-62ea-40ce-9d6f-0da6449a513c" alt="Summary: ideas parked, work uninterrupted" width="320"><br>The idea in short</td>
+</tr>
+</table>
+
 This sketch shows roughly how the pane looks in a terminal with two ideas parked. It is not a
 screenshot:
 
