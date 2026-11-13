@@ -1,5 +1,8 @@
 # idea-shelf
 
+https://github.com/user-attachments/assets/e84a5991-acbb-43d4-beb0-0d2b798c8f32
+
+
 A Claude Code mod that gives you a side pane for ideas that come up while Claude works. You park an
 idea there without starting a new turn, so Claude keeps going on the current task. When you are
 ready, one press sends the whole list.
