@@ -6,7 +6,7 @@ export type ShelfIdea = Idea & { sent?: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'side-stack': { shownFor: number }
+    'side-stack': { shownBy: Record<string, number> }
     'idea-shelf': {
       ideas: ShelfIdea[]
       nextId: number

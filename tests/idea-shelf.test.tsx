@@ -940,13 +940,13 @@ test('each idea has one row of actions: Send, Edit, Delete; Send sends only that
   await ui.unmount()
 })
 
-/** side-stack 0.5.0 and later: answers a showStack ask by writing the same number to shownFor. */
+/** side-stack 0.5.1 and later: answers a showStack ask by writing the same number to shownBy['idea-shelf']. */
 const SILENT_HOST = {
   name: 'side-stack',
   register: (on: On) => {
     on('state.set', { plugin: 'idea-shelf', key: 'showStack' }, async ($, e, next) => {
       const result = await next(e)
-      await $.state.set({ plugin: 'side-stack', key: 'shownFor' } as never, (e as { value: number }).value as never)
+      await $.state.set({ plugin: 'side-stack', key: 'shownBy' } as never, { 'idea-shelf': (e as { value: number }).value } as never)
       return result
     })
   },

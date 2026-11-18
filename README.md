@@ -152,7 +152,7 @@ idea-shelf, plan-checklist and clean-view.
   shows one line, "Shown in the Stack pane (/stack)", so the list never shows twice.
 - **Bringing the Stack pane forward.** A bare `/ideas`, and parking an idea with `/ideas <text>`,
   ask side-stack for its pane with nothing in the chat: idea-shelf counts its `showStack` value up,
-  and side-stack (0.5.0 and later) opens its pane and answers with the same number. Parking does
+  and side-stack (0.5.1 and later) opens its pane and answers with the same number. Parking does
   not ask when the pane is already open, or when your last prompt came through Remote Control
   (phone or claude.ai), where no pane shows. With an older side-stack, which does not answer,
   idea-shelf runs `/stack` as before (it shows as a prompt from this plugin).

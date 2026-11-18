@@ -22,10 +22,11 @@ const editing = atom({ plugin: 'idea-shelf', key: 'editing' } as const, null)
 const expanded = atom({ plugin: 'idea-shelf', key: 'expanded' } as const, false)
 // The collapsed empty section's "+ Park" pressed: the input shows.
 const adding = atom({ plugin: 'idea-shelf', key: 'adding' } as const, false)
-// Counted up to ask side-stack for its pane, silently; side-stack (0.5.0 and
-// later) answers with the same number in its `shownFor`. An older one answers nothing.
+// Counted up to ask side-stack for its pane, silently; side-stack (0.5.1 and
+// later) answers with the same number in its `shownBy` entry for this plugin.
+// An older one answers nothing.
 const showStackAtom = atom({ plugin: 'idea-shelf', key: 'showStack' } as const, 0)
-const shownForAtom = atom({ plugin: 'side-stack', key: 'shownFor' } as const, 0)
+const shownByAtom = atom({ plugin: 'side-stack', key: 'shownBy' } as const, {} as Record<string, number>)
 // Published for side-stack: true while this shelf draws inside the stack.
 const stackedFlag = atom({ plugin: 'idea-shelf', key: 'stacked' } as const, false)
 const loadedFor = atom({ plugin: 'idea-shelf', key: 'loadedFor' } as const, null)
@@ -402,7 +403,7 @@ const bringForward = async ($: EngineInterface, asked = false): Promise<boolean>
     $,
     {
       ask: () => update($, showStackAtom, n => (n ?? 0) + 1),
-      answer: () => read($, shownForAtom),
+      answer: async () => (await read($, shownByAtom))?.['idea-shelf'] ?? 0,
       fallback: async () => {
         await $.command.run({ command: 'stack' }).catch(() => openPane($, true).catch(() => undefined))
       },
@@ -545,6 +546,10 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, look:
   const isAdding = await read($, adding)
   const unsent = list.filter(i => i.sent === undefined).length
   const shown = stacked && !isExpanded ? list.slice(0, STACK_SHOWN) : list
+  // With one idea left to send and its row shown, that row's Send is the shelf's
+  // Send. Otherwise a Send button under the list sends every idea not sent yet
+  // (also the one idea past the row budget, so it is never without a Send).
+  const rowIsSend = unsent === 1 && shown.some(i => i.sent === undefined)
 
   const hint = <Text key={`${k}hint`} dimColor>Type /ideas your idea to park one.</Text>
   if (stacked && list.length === 0 && !isAdding) {
@@ -580,8 +585,7 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, look:
       {list.length === 0 && <Text dimColor>No ideas parked.</Text>}
       {shown.map(i => {
         const isWaiting = i.sent !== undefined
-        // With one idea left to send, its Send is the shelf's Send.
-        const sendKey = unsent === 1 ? `${k}send` : `${k}send-${i.id}`
+        const sendKey = rowIsSend ? `${k}send` : `${k}send-${i.id}`
         return (
           <Box key={`idea-${i.id}`} flexDirection="column">
             {editId === i.id && Input !== undefined && !isWaiting ? (
@@ -622,9 +626,9 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, look:
           {isExpanded ? 'Show fewer' : `Show all ${list.length}`}
         </Button>
       )}
-      {unsent > 1 && (
+      {unsent > 0 && !rowIsSend && (
         <Button key={`${k}send`} variant="primary" onPress={() => sendAll($)}>
-          {`Send all ${unsent}`}
+          {unsent > 1 ? `Send all ${unsent}` : 'Send 1'}
         </Button>
       )}
     </Box>
