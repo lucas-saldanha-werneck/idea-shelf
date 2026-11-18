@@ -6,12 +6,15 @@ export type ShelfIdea = Idea & { sent?: number }
 
 declare module 'claude-code' {
   interface PluginState {
+    'side-stack': { shownBy: Record<string, number> }
     'idea-shelf': {
       ideas: ShelfIdea[]
       nextId: number
       editing: number | null
       // Stacked section: show every idea instead of the first few.
       expanded: boolean
+      adding: boolean
+      showStack: number
       // True while the shelf draws inside the side-stack pane (read by side-stack).
       stacked: boolean
       // The session id the shelf was loaded for; gone with the state on /clear.

@@ -1,29 +1,32 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, ResolveInput, MatchedHook } from 'claude-code'
+import type { EngineInterface, Register, ResolveInput } from 'claude-code'
 
 import type { Idea, ShelfIdea } from '../types'
+import { HOST_CHECKS_MS, STACKED_LINE, hasSection, heading, hostPresent, lookOf, notePrompt, placeSection, showStack } from './stack-guest'
+import type { Look, StackHook } from './stack-guest'
 
 // A side shelf: the person parks ideas while Claude works (no model turn),
 // edits or deletes them, then sends the whole list to Claude with one press.
 // Works alone (its own pane) or as one section of the side-stack pane.
 
 const PANE = 'idea-shelf'
-const STACK = 'side-stack'
 const HEADER = 'Ideas I parked on my idea shelf while we worked:'
 const MAX_IDEAS = 200
 // In the shared stack the section keeps a row budget, so it never pushes the
 // other sections off screen: the first few ideas, then "Show all".
 const STACK_SHOWN = 6
-// Section order (side-stack protocol v4): the section is keyed so side-stack
-// can move it, and side-stack leaves an empty Box keyed SLOT_KEY where it wants
-// a section that sits above it in the chain.
-const SECTION_KEY = 'side-stack:idea-shelf'
-const SLOT_KEY = 'side-stack:slot:idea-shelf'
 
 const ideas = atom({ plugin: 'idea-shelf', key: 'ideas' } as const, [])
 const nextId = atom({ plugin: 'idea-shelf', key: 'nextId' } as const, 1)
 const editing = atom({ plugin: 'idea-shelf', key: 'editing' } as const, null)
 const expanded = atom({ plugin: 'idea-shelf', key: 'expanded' } as const, false)
+// The collapsed empty section's "+ Park" pressed: the input shows.
+const adding = atom({ plugin: 'idea-shelf', key: 'adding' } as const, false)
+// Counted up to ask side-stack for its pane, silently; side-stack (0.5.1 and
+// later) answers with the same number in its `shownBy` entry for this plugin.
+// An older one answers nothing.
+const showStackAtom = atom({ plugin: 'idea-shelf', key: 'showStack' } as const, 0)
+const shownByAtom = atom({ plugin: 'side-stack', key: 'shownBy' } as const, {} as Record<string, number>)
 // Published for side-stack: true while this shelf draws inside the stack.
 const stackedFlag = atom({ plugin: 'idea-shelf', key: 'stacked' } as const, false)
 const loadedFor = atom({ plugin: 'idea-shelf', key: 'loadedFor' } as const, null)
@@ -36,17 +39,7 @@ const plain = (i: ShelfIdea): Idea => ({ id: i.id, text: i.text })
 
 // ---- side-stack --------------------------------------------------------------
 
-// side-stack counts as present when its /stack command is live. That alone:
-// its `present` state is per session and is gone after a /clear.
-async function hostPresent($: EngineInterface): Promise<boolean> {
-  try {
-    const commands = await $.command.list()
-    return commands.some(c => c.name === 'stack' && (c.plugin ?? '').split('@')[0] === 'side-stack')
-  } catch {
-    return false
-  }
-}
-
+// side-stack counts as present when its /stack command is live (stack-guest.tsx).
 // Checks the host and keeps the published `stacked` flag in step with it. A
 // render hook may not write state: there `publish` is false and the write is
 // left to a timer.
@@ -400,19 +393,23 @@ const placePane = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// Something the person must see: inside the stack, bring the Stack pane up
-// (side-stack's /stack); if that is refused, the own pane.
-// The host refuses a command run from inside a command.run hook (it would
-// wait on the turn that hook holds), so the run starts from a timer, as its
-// own dispatch. Not awaited: a command from a mod waits until the session is idle.
-const bringForward = ($: EngineInterface): void => {
-  const run = () => void $.command.run({ command: 'stack' }).catch(() => openPane($, true).catch(() => undefined))
-  try {
-    $.clock.after(0, run)
-  } catch {
-    run()
-  }
-}
+// Something the person must see: inside the stack, ask side-stack for its pane
+// with nothing in the chat (its showStack counter). Not when the pane is open
+// already, or the person reads from Remote Control (no pane shows there).
+// `asked` (a bare /ideas) always asks. An older side-stack answers nothing:
+// then /stack runs, as before, and if that is refused, the own pane.
+const bringForward = async ($: EngineInterface, asked = false): Promise<boolean> =>
+  showStack(
+    $,
+    {
+      ask: () => update($, showStackAtom, n => (n ?? 0) + 1),
+      answer: async () => (await read($, shownByAtom))?.['idea-shelf'] ?? 0,
+      fallback: async () => {
+        await $.command.run({ command: 'stack' }).catch(() => openPane($, true).catch(() => undefined))
+      },
+    },
+    asked,
+  ).catch(() => false)
 
 // ---- Shelf changes -----------------------------------------------------------
 
@@ -422,6 +419,7 @@ const addIdea = async ($: EngineInterface, raw: string): Promise<void> => {
   // Queued at once (no await before), so ideas get ids in the order parked.
   // Every change starts from the saved shelf, so no load is needed first.
   await change($, (items, n) => ({ items: [...items, { id: n, text }], nextId: n + 1 }))
+  await update($, adding, () => false).catch(() => undefined)
   await placePane($)
 }
 
@@ -472,7 +470,8 @@ let sendCount = 0
 const unsentIdeas = async ($: EngineInterface): Promise<ShelfIdea[]> =>
   (await read($, ideas)).filter(i => i.sent === undefined)
 
-const sendAll = async ($: EngineInterface): Promise<void> => {
+// `only`: the one idea a row's Send sends; absent, every idea not sent yet.
+const sendAll = async ($: EngineInterface, only?: number): Promise<void> => {
   await ensureLoaded($)
   // The saved shelf as it stands now: ideas another session already sent (and
   // that left the store) must not go again.
@@ -480,8 +479,9 @@ const sendAll = async ($: EngineInterface): Promise<void> => {
   const no = ++sendCount
   let list: Idea[] = []
   await update($, ideas, current => {
-    list = current.filter(i => i.sent === undefined).map(plain)
-    return list.length === 0 ? current : current.map(i => (i.sent === undefined ? { ...i, sent: no } : i))
+    const isPicked = (i: ShelfIdea) => i.sent === undefined && (only === undefined || i.id === only)
+    list = current.filter(isPicked).map(plain)
+    return list.length === 0 ? current : current.map(i => (isPicked(i) ? { ...i, sent: no } : i))
   })
   if (list.length === 0) return
   const ids = list.map(i => i.id)
@@ -529,10 +529,11 @@ const ideasEntered = async ($: EngineInterface, text: string): Promise<void> => 
 
 // ---- Drawing -----------------------------------------------------------------
 
-// One drawing for both places. Inside the stack the keys carry an `idea-`
-// prefix (other sections share the tree), a heading names the section, and
-// only the first few ideas show until "Show all".
-async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stacked: boolean) {
+// One view for both looks (terminal and app, see stack-guest.tsx); today they
+// draw the same tree. Inside the stack the keys carry an `idea-` prefix (other
+// sections share the tree), a heading names the section, an empty shelf folds
+// to that one line, and only the first few ideas show until "Show all".
+async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, look: Look, stacked: boolean) {
   const table = $.ui.resolve(e)
   const { Box, Text, Button } = table
   // The mobile app draws no text field yet: /ideas <text> parks one there.
@@ -542,20 +543,49 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
   const list = fromStore ?? (await read($, ideas))
   const editId = await read($, editing)
   const isExpanded = await read($, expanded)
+  const isAdding = await read($, adding)
   const unsent = list.filter(i => i.sent === undefined).length
   const shown = stacked && !isExpanded ? list.slice(0, STACK_SHOWN) : list
+  // With one idea left to send and its row shown, that row's Send is the shelf's
+  // Send. Otherwise a Send button under the list sends every idea not sent yet
+  // (also the one idea past the row budget, so it is never without a Send).
+  const rowIsSend = unsent === 1 && shown.some(i => i.sent === undefined)
+
+  const hint = <Text key={`${k}hint`} dimColor>Type /ideas your idea to park one.</Text>
+  if (stacked && list.length === 0 && !isAdding) {
+    // Folded: one line. "+ Park" opens the input; with no input (mobile), the hint.
+    const park =
+      Input !== undefined ? (
+        <Button key="idea-park" plain onPress={() => update($, adding, () => true)}>
+          + Park
+        </Button>
+      ) : undefined
+    return (
+      <Box flexDirection="column">
+        {heading($, e, look, 'idea-shelf', 'Ideas', '0', park)}
+        {Input === undefined && hint}
+      </Box>
+    )
+  }
 
   return (
-    <Box key={stacked ? SECTION_KEY : 'shelf'} flexDirection="column" gap={1}>
-      {stacked && <Text bold>{list.length > 0 ? `Ideas (${list.length})` : 'Ideas'}</Text>}
+    <Box key="shelf" flexDirection="column">
+      {stacked && heading($, e, look, 'idea-shelf', 'Ideas', String(list.length))}
       {Input !== undefined ? (
-        <Input key={`${k}new`} placeholder="Park an idea" submitLabel="park" onSubmit={(value: string) => addIdea($, value)} />
+        <Input
+          key={`${k}new`}
+          placeholder="Park an idea"
+          submitLabel="park"
+          {...(stacked && list.length === 0 ? { autoFocus: true as const } : {})}
+          onSubmit={(value: string) => addIdea($, value)}
+        />
       ) : (
-        <Text dimColor>Type /ideas your idea to park one.</Text>
+        hint
       )}
       {list.length === 0 && <Text dimColor>No ideas parked.</Text>}
       {shown.map(i => {
         const isWaiting = i.sent !== undefined
+        const sendKey = rowIsSend ? `${k}send` : `${k}send-${i.id}`
         return (
           <Box key={`idea-${i.id}`} flexDirection="column">
             {editId === i.id && Input !== undefined && !isWaiting ? (
@@ -570,17 +600,21 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
               <Text wrap="wrap">• {i.text}</Text>
             )}
             {isWaiting ? (
-              // Waiting: no Edit or Delete, the message already carries it.
-              <Text dimColor>sent, waiting for Claude</Text>
+              // Waiting: no Send, Edit or Delete, the message already carries it.
+              <Text dimColor>waiting</Text>
             ) : (
+              // One row: Send (the main action), Edit, Delete (in red).
               <Box flexDirection="row" gap={1}>
+                <Button key={sendKey} variant="primary" onPress={() => sendAll($, i.id)}>
+                  Send
+                </Button>
                 {Input !== undefined && (
                   <Button key={`${k}edit-${i.id}`} plain onPress={() => update($, editing, v => (v === i.id ? null : i.id))}>
                     {editId === i.id ? 'Cancel' : 'Edit'}
                   </Button>
                 )}
-                <Button key={`${k}del-${i.id}`} plain onPress={() => removeIdea($, i.id)}>
-                  Delete
+                <Button key={`${k}del-${i.id}`} label="Delete" plain onPress={() => removeIdea($, i.id)}>
+                  <Text color="error">Delete</Text>
                 </Button>
               </Box>
             )}
@@ -592,76 +626,29 @@ async function drawShelf<E extends ResolveInput>($: EngineInterface, e: E, stack
           {isExpanded ? 'Show fewer' : `Show all ${list.length}`}
         </Button>
       )}
-      {unsent > 0 && (
+      {unsent > 0 && !rowIsSend && (
         <Button key={`${k}send`} variant="primary" onPress={() => sendAll($)}>
-          {`Send ${unsent}`}
+          {unsent > 1 ? `Send all ${unsent}` : 'Send 1'}
         </Button>
       )}
     </Box>
   )
 }
 
-// ---- Section order -------------------------------------------------------------
-
-type El = { props?: Record<string, unknown>; children?: unknown[] }
-
-/** A copy of `node` with the Box keyed SLOT_KEY replaced by `section`, or
- *  undefined when there is no such Box (no side-stack order beneath). */
-function fillSlot(node: unknown, section: unknown): unknown {
-  const el = node as El | null
-  if (el === null || typeof el !== 'object' || !Array.isArray(el.children)) return undefined
-  for (let i = 0; i < el.children.length; i++) {
-    const child = el.children[i] as El | null
-    const isSlot = child !== null && typeof child === 'object' && child.props?.key === SLOT_KEY
-    const swapped = isSlot ? section : fillSlot(child, section)
-    if (swapped !== undefined) {
-      const children = [...el.children]
-      children[i] = swapped
-      return { ...el, children }
-    }
-  }
-  return undefined
-}
-
 // ---- Hooks -------------------------------------------------------------------
 
-// True when the tree already holds this mod's section: the other of the two
-// registrations below drew it first (a build where both match), so it is drawn once.
-function hasSection(node: unknown): boolean {
-  if (node === null || typeof node !== 'object') return false
-  const el = node as { props?: { key?: unknown }; children?: unknown }
-  if (el.props?.key === SECTION_KEY) return true
-  return Array.isArray(el.children) && el.children.some(hasSection)
-}
-
 // Inside the side-stack pane: this section (only while side-stack is really
-// there), then every other section below.
-// Claude Code 2.1.327+ hears only a plugin's own drawings unless the matcher
-// names `plugin` ("*" = every plugin's); side-stack opens this pane, so the
-// first matcher is the one that runs there. Older builds know no `plugin` key
-// on a Pane and run the second; each build runs exactly one of the two.
-const drawInStack: MatchedHook<'ui.render', { component: 'Pane'; requestId: typeof STACK }> = async ($, e, next) => {
+// there), then every other section below. See stack-guest.tsx for the two
+// registrations and the slot side-stack may leave for it.
+async function drawStacked<E extends ResolveInput>($: EngineInterface, e: E, look: Look) {
+  if (!(await isStacked($, false))) return null
+  return drawShelf($, e, look, true)
+}
+const drawInStack: StackHook = async ($, e, next) => {
   const below = await next(e)
-  if (hasSection(below)) return below
-  let section = null
-  try {
-    if (await isStacked($, false)) {
-      section = await drawShelf($, e, true)
-    }
-  } catch {
-    // A broken section never takes the others down.
-  }
-  if (section === null) return below
-  // side-stack asked for this section in a set place: fill it there.
-  const filled = fillSlot(below, section)
-  if (filled !== undefined) return filled as typeof below
-  const { Box } = $.ui.resolve(e)
-  return (
-    <Box flexDirection="column" gap={1}>
-      {section}
-      {below}
-    </Box>
-  )
+  if (hasSection(below, 'idea-shelf')) return below
+  // A broken section never takes the others down.
+  return placeSection($, e, below, 'idea-shelf', await drawStacked($, e, lookOf(e.surface)).catch(() => null))
 }
 
 export const register: Register = on => {
@@ -672,8 +659,7 @@ export const register: Register = on => {
     // Plugin load order is unknown: the host may set its flag after this
     // start. Look a moment later, and once more about a second later.
     try {
-      $.clock.after(100, () => void placePane($))
-      $.clock.after(1100, () => void placePane($))
+      for (const ms of HOST_CHECKS_MS) $.clock.after(ms, () => void placePane($))
     } catch {
       // No clock: look now.
       void placePane($)
@@ -705,12 +691,12 @@ export const register: Register = on => {
     }
     if (arg !== '') {
       await addIdea($, arg)
-      if (await isStacked($)) bringForward($)
+      if (await isStacked($)) await bringForward($)
       return { text: 'Idea parked on the shelf.' }
     }
     if (await isStacked($)) {
-      bringForward($)
-      return { text: 'The idea shelf is in the Stack pane.' }
+      await bringForward($, true)
+      return { text: 'Stack pane opened.' }
     }
     await openPane($, true)
     return { text: 'Idea shelf opened.' }
@@ -721,6 +707,7 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     await ensureLoaded($).catch(() => undefined)
     const origin = e.origin as { kind: string; name?: string } | undefined
+    notePrompt(origin?.kind)
     const isMine = origin?.kind === 'plugin' && (origin.name ?? '').split('@')[0] === $.plugin.name.split('@')[0]
     const result = await next(e)
     if (isMine && result.drop === undefined) await ideasEntered($, e.text ?? '').catch(() => undefined)
@@ -739,11 +726,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     if (await isStacked($, false)) {
       const { Text } = $.ui.resolve(e)
-      return <Text dimColor>Shown in the Stack pane (/stack)</Text>
+      return <Text dimColor>{STACKED_LINE}</Text>
     }
-    return drawShelf($, e, false)
+    return drawShelf($, e, lookOf(e.surface), false)
   })
 
-  on('ui.render', { component: 'Pane', requestId: STACK, plugin: '*' }, drawInStack)
-  on('ui.render', { component: 'Pane', requestId: STACK }, drawInStack)
+  on('ui.render', { component: 'Pane', requestId: 'side-stack', plugin: '*' }, drawInStack)
+  on('ui.render', { component: 'Pane', requestId: 'side-stack' }, drawInStack)
 }

@@ -326,7 +326,7 @@ test('a new session in the same folder gets the ideas back as normal ideas; the 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...PANE })
     expect(await ui.find({ type: 'Text', text: /add dark mode/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeUndefined()
     expect(await ui.find({ key: 'send' })).toBeDefined()
     await ui.unmount()
   }
@@ -345,7 +345,7 @@ test('/clear (session ends, new id, no session.start): the shelf stays saved and
   const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
   void ui.press({ key: 'send' })
   await settle()
-  expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeDefined()
   await ui.unmount()
   // The docs: a /clear is session.end with reason 'clear'; the process goes on
   // under a new session id and no session.start fires.
@@ -356,7 +356,7 @@ test('/clear (session ends, new id, no session.start): the shelf stays saved and
   for (const surface of SURFACES) {
     const after = await $.ui.mount({ plugin: 'idea-shelf', surface, ...PANE })
     expect(await after.find({ type: 'Text', text: /call the supplier/ })).toBeDefined()
-    expect(await after.find({ type: 'Text', text: /waiting for Claude/ })).toBeUndefined()
+    expect(await after.find({ type: 'Text', text: /^waiting$/ })).toBeUndefined()
     expect(await after.find({ key: 'send' })).toBeDefined()
     await after.unmount()
   }
@@ -381,7 +381,7 @@ test('sent ideas stay, marked waiting, until their turn starts; then they leave 
     expect(entered.at(-1)?.startsWith('Ideas I parked on my idea shelf while we worked:\n1. ')).toBe(true)
     expect(entered.at(-1)?.endsWith(`. add dark mode ${surface}`)).toBe(true)
     expect(await ui.find({ type: 'Text', text: new RegExp(`add dark mode ${surface}`) })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /sent, waiting for Claude/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeDefined()
     expect(await ui.find({ key: 'send' })).toBeUndefined()
     expect((await $.command.run(ideasCommand('send'))).text).toBe('No ideas to send.')
     expect(texts(w)).toContain(`add dark mode ${surface}`)
@@ -406,7 +406,7 @@ test('a dropped prompt gives the ideas back, ready to send again, still saved (t
     await ui.input({ key: 'new', text: `call the supplier ${surface}` })
     await ui.press({ key: 'send' })
     expect(await ui.find({ type: 'Text', text: new RegExp(`call the supplier ${surface}`) })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeUndefined()
     expect(await ui.find({ key: 'send' })).toBeDefined()
     await settle()
     expect(texts(w)).toContain(`call the supplier ${surface}`)
@@ -454,11 +454,11 @@ test('two sends of the same text: each message removes only its own idea; a drop
   await $.turn.start({ turnId: 't2', text: entered[0]! })
   await settle()
   expect((await ui.findAll({ type: 'Text', text: /fix the tests/ })).length).toBe(1)
-  expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeDefined()
   answerSecond({ drop: 'blocked' })
   await settle()
   expect(await ui.find({ type: 'Text', text: /fix the tests/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeUndefined()
   expect(await ui.find({ key: 'send' })).toBeDefined()
   expect(texts(w)).toEqual(['fix the tests'])
   await ui.unmount()
@@ -573,7 +573,7 @@ test('a waiting idea has no Edit or Delete (terminal and desktop)', async ($, on
       void ui.press({ key: 'send' })
       await settle()
     }
-    expect(await ui.find({ type: 'Text', text: /waiting for Claude/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^waiting$/ })).toBeDefined()
     expect(await ui.find({ key: 'del-1' })).toBeUndefined()
     expect(await ui.find({ key: 'edit-1' })).toBeUndefined()
     await ui.unmount()
@@ -649,9 +649,13 @@ test('stacked: own pane closed, section headed Ideas with the full send flow, se
   expect(w.stackedFlag.at(-1)).toEqual(true)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
-    expect(await ui.find({ type: 'Text', text: /^Ideas( \(\d+\))?$/ })).toBeDefined()
+    // An empty shelf folds to its heading; "+ Park" opens the input.
+    expect(await ui.find({ type: 'Text', text: 'Ideas · 0' })).toBeDefined()
+    expect(await ui.find({ key: 'idea-new' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /SECTION-BELOW/ })).toBeDefined()
+    await ui.press({ key: 'idea-park' })
     await ui.input({ key: 'idea-new', text: `idea on ${surface}` })
+    expect(await ui.find({ type: 'Text', text: 'Ideas · 1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: new RegExp(`idea on ${surface}`) })).toBeDefined()
     const id = stored(w.kept).at(-1)!.id
     await ui.press({ key: `idea-edit-${id}` })
@@ -672,7 +676,7 @@ test('stacked: own pane closed, section headed Ideas with the full send flow, se
   const before = w.opened.filter(id => id === 'idea-shelf').length
   await $.command.run(ideasCommand('one more'))
   expect(w.opened.filter(id => id === 'idea-shelf').length).toBe(before)
-  expect((await $.command.run(ideasCommand(''))).text).toBe('The idea shelf is in the Stack pane.')
+  expect((await $.command.run(ideasCommand(''))).text).toBe('Stack pane opened.')
   await w.clock.advance(10)
   await settle()
   expect(w.stackRuns).toBeGreaterThan(0)
@@ -733,7 +737,7 @@ test('real /clear: session.end, new id, no session.start, then a turn: list back
     await settle()
     expect(w.stateReset).toBe(false)
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
-    expect(await ui.find({ type: 'Text', text: /^Ideas \(1\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Ideas · 1$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /call the supplier/ })).toBeDefined()
     expect(await ui.find({ key: 'idea-send' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /SECTION-BELOW/ })).toBeDefined()
@@ -776,13 +780,13 @@ test('side-stack order: the section fills its slot, between the sections around 
   await stackedWorld($, on, true)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
-    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas (1)', 'SECTION-B'])
+    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas · 1', 'SECTION-B'])
     expect(await ui.find({ key: 'side-stack:idea-shelf' })).toBeDefined()
     expect(await ui.find({ key: 'side-stack:slot:idea-shelf' })).toBeUndefined()
     // The filled section still works.
     await ui.input({ key: 'idea-new', text: `second on ${surface}` })
     expect(await ui.find({ type: 'Text', text: new RegExp(`second on ${surface}`) })).toBeDefined()
-    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas (2)', 'SECTION-B'])
+    expect(await order(ui as never)).toEqual(['SECTION-A', 'Ideas · 2', 'SECTION-B'])
     const id = (await ui.findAll({ type: 'Button' })).map(b => String(b.key)).find(k => k.startsWith('idea-del-'))!
     await ui.press({ key: id })
     expect(await ui.find({ key: 'idea-send' })).toBeDefined()
@@ -794,7 +798,7 @@ test('side-stack order: no slot beneath, the section goes on top as before (term
   await stackedWorld($, on, false)
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
-    expect(await order(ui as never)).toEqual(['Ideas (1)', 'SECTION-A', 'SECTION-B'])
+    expect(await order(ui as never)).toEqual(['Ideas · 1', 'SECTION-A', 'SECTION-B'])
     expect(await ui.find({ key: 'side-stack:idea-shelf' })).toBeDefined()
     await ui.unmount()
   }
@@ -827,7 +831,7 @@ test('real /clear order: a load before the state is emptied does not leave the s
     await w.clock.advance(10)
     await settle()
     const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
-    expect(await ui.find({ type: 'Text', text: /^Ideas \(1\)$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Ideas · 1$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /No ideas parked/ })).toBeUndefined()
     await ui.unmount()
     expect(texts(w)).toEqual(['testar o painel no app'])
@@ -887,4 +891,90 @@ test('Send re-reads the saved shelf: ideas another session already sent do not g
   await settle()
   expect(entered.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. y')
   await ui.unmount()
+})
+
+// ---- Looks, the row of actions, and the silent Stack pane ---------------------
+
+// One render path for the terminal and one for the apps (stack-guest.tsx, lookOf):
+// today both draw the same section, and each must draw.
+test('the Stack section and the own pane draw on the terminal and on the desktop app', async ($, on) => {
+  const w = await start($, on)
+  await $.command.run(ideasCommand('first idea'))
+  for (const surface of SURFACES) {
+    const own = await $.ui.mount({ plugin: 'idea-shelf', surface, ...PANE })
+    expect(await own.find({ type: 'Text', text: /first idea/ })).toBeDefined()
+    expect(await own.find({ key: 'send' })).toBeDefined()
+    await own.unmount()
+  }
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    expect(await ui.find({ key: 'side-stack:idea-shelf' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Ideas · 1' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /first idea/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('each idea has one row of actions: Send, Edit, Delete; Send sends only that idea, Send all sends the rest', async ($, on) => {
+  const sent: string[] = []
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  for (const text of ['one', 'two', 'three']) await ui.input({ key: 'new', text })
+  const [first] = await shownIds(ui)
+  const row = (await ui.findAll({ type: 'Button' } as never)).map(b => b.key)
+  const i = row.indexOf(`send-${first}`)
+  expect(row.slice(i, i + 3)).toEqual([`send-${first}`, `edit-${first}`, `del-${first}`])
+  expect(JSON.stringify(await ui.find({ key: `del-${first}` }))).toContain('error')
+  await ui.press({ key: `send-${first}` })
+  expect(sent.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. one')
+  expect((await ui.find({ key: 'send' }))?.text).toBe('Send all 2')
+  await ui.press({ key: 'send' })
+  expect(sent.at(-1)).toBe('Ideas I parked on my idea shelf while we worked:\n1. two\n2. three')
+  await ui.unmount()
+})
+
+/** side-stack 0.5.1 and later: answers a showStack ask by writing the same number to shownBy['idea-shelf']. */
+const SILENT_HOST = {
+  name: 'side-stack',
+  register: (on: On) => {
+    on('state.set', { plugin: 'idea-shelf', key: 'showStack' }, async ($, e, next) => {
+      const result = await next(e)
+      await $.state.set({ plugin: 'side-stack', key: 'shownBy' } as never, { 'idea-shelf': (e as { value: number }).value } as never)
+      return result
+    })
+  },
+}
+
+test('/ideas asks side-stack for its pane silently (no /stack run) when side-stack answers', { plugins: [SILENT_HOST] }, async ($, on) => {
+  on('session.surfaces', () => ({ value: ['terminal'] }) as never)
+  const w = await start($, on)
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  expect((await $.command.run(ideasCommand(''))).text).toBe('Stack pane opened.')
+  await $.command.run(ideasCommand('parked quietly'))
+  await w.clock.advance(10)
+  await settle()
+  expect(w.stackRuns).toBe(0)
+})
+
+test('from Remote Control, parking an idea does not ask for the Stack pane', async ($, on) => {
+  on('session.surfaces', () => ({ value: ['terminal', 'mobile'] }) as never)
+  const w = await start($, on)
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  await $.prompt.submit({ text: 'hi from the phone', origin: { kind: 'bridge' } } as never).catch(() => undefined)
+  await $.command.run(ideasCommand('parked from the phone'))
+  await w.clock.advance(10)
+  await settle()
+  expect(w.stackRuns).toBe(0)
+  expect(texts(w)).toContain('parked from the phone')
 })

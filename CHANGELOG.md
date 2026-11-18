@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-18
+- Each idea has one row of actions: Send (that idea), Edit, Delete (red). Send all N with two or more ideas.
+- In the Stack pane: an `Ideas · N` heading; an empty shelf folds to one line with + Park.
+- `/ideas` and parking ask side-stack for its pane silently (the `showStack` counter, side-stack 0.5.1+), not when the pane is open or the person reads from Remote Control; `/stack` stays the fallback for an older side-stack.
+- "waiting" in place of "sent, waiting for Claude"; no blank rows inside the section; `/ideas` answers "Stack pane opened."
+- The side-stack guest protocol now comes from `hooks/stack-guest.tsx`, a byte-identical copy of side-stack's (CI checks it).
+- Rendering split by surface: one look for the terminal, one for the apps (desktop, mobile, VS Code). Both draw the same tree for now.
+
 ## [0.3.9] - 2026-11-18
 - Draw in the side-stack pane again on Claude Code 2.1.327 and later, which hears only a plugin's own drawings unless the hook names `plugin: '*'`. Older builds keep working (the hook is registered both ways and the section is drawn once).
 
