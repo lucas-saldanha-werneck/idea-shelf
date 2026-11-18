@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, ResolveInput } from 'claude-code'
+import type { EngineInterface, Register, ResolveInput, MatchedHook } from 'claude-code'
 
 import type { Idea, ShelfIdea } from '../types'
 
@@ -625,6 +625,45 @@ function fillSlot(node: unknown, section: unknown): unknown {
 
 // ---- Hooks -------------------------------------------------------------------
 
+// True when the tree already holds this mod's section: the other of the two
+// registrations below drew it first (a build where both match), so it is drawn once.
+function hasSection(node: unknown): boolean {
+  if (node === null || typeof node !== 'object') return false
+  const el = node as { props?: { key?: unknown }; children?: unknown }
+  if (el.props?.key === SECTION_KEY) return true
+  return Array.isArray(el.children) && el.children.some(hasSection)
+}
+
+// Inside the side-stack pane: this section (only while side-stack is really
+// there), then every other section below.
+// Claude Code 2.1.327+ hears only a plugin's own drawings unless the matcher
+// names `plugin` ("*" = every plugin's); side-stack opens this pane, so the
+// first matcher is the one that runs there. Older builds know no `plugin` key
+// on a Pane and run the second; each build runs exactly one of the two.
+const drawInStack: MatchedHook<'ui.render', { component: 'Pane'; requestId: typeof STACK }> = async ($, e, next) => {
+  const below = await next(e)
+  if (hasSection(below)) return below
+  let section = null
+  try {
+    if (await isStacked($, false)) {
+      section = await drawShelf($, e, true)
+    }
+  } catch {
+    // A broken section never takes the others down.
+  }
+  if (section === null) return below
+  // side-stack asked for this section in a set place: fill it there.
+  const filled = fillSlot(below, section)
+  if (filled !== undefined) return filled as typeof below
+  const { Box } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column" gap={1}>
+      {section}
+      {below}
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     setFolder(e.cwd)
@@ -705,28 +744,6 @@ export const register: Register = on => {
     return drawShelf($, e, false)
   })
 
-  // Inside the side-stack pane: this section (only while side-stack is really
-  // there), then every other section below.
-  on('ui.render', { component: 'Pane', requestId: STACK }, async ($, e, next) => {
-    let section = null
-    try {
-      if (await isStacked($, false)) {
-        section = await drawShelf($, e, true)
-      }
-    } catch {
-      // A broken section never takes the others down.
-    }
-    const below = await next(e)
-    if (section === null) return below
-    // side-stack asked for this section in a set place: fill it there.
-    const filled = fillSlot(below, section)
-    if (filled !== undefined) return filled as typeof below
-    const { Box } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="column" gap={1}>
-        {section}
-        {below}
-      </Box>
-    )
-  })
+  on('ui.render', { component: 'Pane', requestId: STACK, plugin: '*' }, drawInStack)
+  on('ui.render', { component: 'Pane', requestId: STACK }, drawInStack)
 }

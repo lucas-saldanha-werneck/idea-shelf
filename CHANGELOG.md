@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.3.9] - 2026-11-18
+- Draw in the side-stack pane again on Claude Code 2.1.327 and later, which hears only a plugin's own drawings unless the hook names `plugin: '*'`. Older builds keep working (the hook is registered both ways and the section is drawn once).
+
 ## [0.3.8] - 2026-11-13
 - README Examples section.
 
