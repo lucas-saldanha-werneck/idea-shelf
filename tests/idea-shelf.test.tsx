@@ -709,6 +709,44 @@ test('stacked: the section keeps a row budget, with Show all for the rest (termi
   }
 })
 
+test('stacked: every shown idea row has its Send; the one unsent idea past the row budget keeps a Send (terminal and desktop)', async ($, on) => {
+  // The app has not taken the messages yet: sent ideas stay on the shelf, waiting.
+  const entered = neverSettles(on)
+  const w = await start($, on)
+  w.host.command = true
+  await w.clock.advance(1500)
+  await settle()
+  for (let n = 1; n <= 7; n++) await $.command.run(ideasCommand(`idea ${n}`))
+  const ids = stored(w.kept).map(i => i.id)
+  expect(ids.length).toBe(7)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ plugin: 'idea-shelf', surface, ...STACK })
+    // Seven unsent: six rows shown, each with its own Send; the seventh is
+    // hidden (no row Send) and the Send all button under the list covers it.
+    for (const id of ids.slice(0, 6)) expect(await ui.find({ key: `idea-send-${id}` })).toBeDefined()
+    expect(await ui.find({ key: `idea-send-${ids[6]}` })).toBeUndefined()
+    expect(await ui.find({ key: 'idea-send' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'Send all 7' })).toBeDefined()
+    await ui.unmount()
+  }
+  // Send the six shown ideas one by one: the seventh is the only idea left to
+  // send, its row is not shown, and it must still have a Send.
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...STACK })
+  for (const id of ids.slice(0, 6)) {
+    void ui.press({ key: `idea-send-${id}` })
+    await settle()
+  }
+  expect(entered.length).toBe(6)
+  expect(await ui.find({ type: 'Text', text: /idea 7/ })).toBeUndefined()
+  expect(await ui.find({ key: `idea-send-${ids[6]}` })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: 'Send 1' })).toBeDefined()
+  void ui.press({ key: 'idea-send' })
+  await settle()
+  expect(entered.length).toBe(7)
+  expect(entered[6]).toContain('idea 7')
+  await ui.unmount()
+})
+
 // v3 (real terminal test): after a real /clear the session state is gone and
 // no session.start fires. The list must come back from the store and the
 // section must stay in the stack, found by side-stack's /stack command alone.
