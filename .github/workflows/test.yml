@@ -20,3 +20,6 @@ jobs:
       # after `claude plugin test .` passes on the new version.
       - run: npm i -g @anthropic-ai/claude-code@2.1.322
       - run: claude plugin validate . && claude plugin test .
+      - name: hooks/stack-guest.tsx matches side-stack's copy
+        if: runner.os == 'Linux'
+        run: curl -fsSL https://raw.githubusercontent.com/lucas-saldanha-werneck/side-stack/main/hooks/stack-guest.tsx | cmp - hooks/stack-guest.tsx

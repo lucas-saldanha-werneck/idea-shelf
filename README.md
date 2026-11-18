@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml/badge.svg)](https://github.com/lucas-saldanha-werneck/idea-shelf/actions/workflows/test.yml)
 [![License](https://img.shields.io/github/license/lucas-saldanha-werneck/idea-shelf)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.8-blue)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](CHANGELOG.md)
 [![plugin score (proposal)](https://img.shields.io/badge/plugin%20score%20(proposal)-98.8%20A-brightgreen)](https://github.com/NVIDIA/SkillEvaluator/issues/508)
 
 A Claude Code mod that gives you a side pane for ideas that come up while Claude works. You park an
@@ -23,14 +23,18 @@ This sketch shows roughly how the pane looks in a terminal with two ideas parked
 screenshot:
 
 ```
-Ideas (2)
 [ Park an idea          ] park
 • add dark mode to settings
-  Edit  Delete
+[ Send ] Edit Delete
 • rename the config file
-  Edit  Delete
-[ Send 2 ]
+[ Send ] Edit Delete
+[ Send all 2 ]
 ```
+
+Each idea has one row of actions under it: Send (the main action, sends that idea), Edit, and
+Delete (in red). With two or more ideas, Send all sends them together. In the side-stack pane the
+section starts with an `Ideas · 2` heading, and an empty shelf folds to one line,
+`Ideas · 0 ──── + Park`.
 
 ## What Claude sees
 
@@ -67,12 +71,12 @@ also loads in the desktop app's local Code sessions.
 - Type an idea in the field and press Enter (or the park button). Claude is not interrupted. Line
   breaks and runs of spaces in an idea become one space, so each idea is one line of the message.
 - Edit opens the idea in a text field. Save it empty to delete it. Delete removes it.
-- Send N hands the list to Claude. The ideas do not leave the shelf right away: each one shows
-  "sent, waiting for Claude" until the message actually enters the chat. A message from a mod enters
+- Send (on an idea's row) hands that idea to Claude; Send all N hands every idea not sent yet. The
+  ideas do not leave the shelf right away: each one shows "waiting" until the message actually enters the chat. A message from a mod enters
   only once Claude's current turn has ended, so this can take a while. Then they leave. If the
   message does not get through (for example, a hook blocks it), the waiting mark goes away, the
   ideas are ready to send again, and a toast says so.
-- A waiting idea has no Edit or Delete button, because the message already carries it. Ideas you
+- A waiting idea has no Send, Edit or Delete button, because the message already carries it. Ideas you
   park meanwhile are not part of that message; Send sends them next.
 - Each Send remembers its own ideas. If two Sends carry the same text, the first message entering
   removes only the first Send's idea. An idea leaves only if it still has the number and the text
@@ -146,6 +150,12 @@ idea-shelf, plan-checklist and clean-view.
   always draws the other mods' sections below it. To leave room for them, the section shows the
   first 6 ideas and a "Show all" button for the rest. If the own pane is still drawn somewhere, it
   shows one line, "Shown in the Stack pane (/stack)", so the list never shows twice.
+- **Bringing the Stack pane forward.** A bare `/ideas`, and parking an idea with `/ideas <text>`,
+  ask side-stack for its pane with nothing in the chat: idea-shelf counts its `showStack` value up,
+  and side-stack (0.5.0 and later) opens its pane and answers with the same number. Parking does
+  not ask when the pane is already open, or when your last prompt came through Remote Control
+  (phone or claude.ai), where no pane shows. With an older side-stack, which does not answer,
+  idea-shelf runs `/stack` as before (it shows as a prompt from this plugin).
 
 side-stack counts as present when its `/stack` command is live, and nothing else is required.
 side-stack's own session flag is not used, because a `/clear` starts a new session and session state
@@ -161,6 +171,15 @@ order you set with side-stack's `/stack order`. idea-shelf draws its section in 
 idea-shelf cannot reach by drawing on top, it leaves an empty box keyed `side-stack:slot:idea-shelf`,
 and idea-shelf puts its section there. With no such box (an older side-stack), the section goes on
 top of the others, as in 0.2.
+
+## Terminal and desktop app
+
+**Terminal look and app look.** The drawing is split by surface: one look for the terminal, one for
+the apps (desktop, mobile, VS Code). Today both draw the same tree. Where each look lives, and how to
+change one without the other: side-stack's README,
+[Shared guest code, and where the terminal and app looks live](https://github.com/lucas-saldanha-werneck/side-stack#shared-guest-code-and-where-the-terminal-and-app-looks-live).
+This repo's `hooks/stack-guest.tsx` is a byte-identical copy of side-stack's (CI checks it): change
+it there first.
 
 ## How it works
 
