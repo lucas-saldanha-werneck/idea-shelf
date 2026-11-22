@@ -657,7 +657,7 @@ export const register: Register = on => {
     await ensureLoaded($, true)
     await registerCommand($)
     // Plugin load order is unknown: the host may set its flag after this
-    // start. Look a moment later, and once more about a second later.
+    // start. Look again a moment later, and at 1 s, 5 s, 15 s and 60 s.
     try {
       for (const ms of HOST_CHECKS_MS) $.clock.after(ms, () => void placePane($))
     } catch {
@@ -725,6 +725,12 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     if (await isStacked($, false)) {
+      // Opened before side-stack loaded: a render may not write state or close, so close from a timer.
+      try {
+        $.clock.after(0, () => void placePane($))
+      } catch {
+        // No clock: the next check closes it.
+      }
       const { Text } = $.ui.resolve(e)
       return <Text dimColor>{STACKED_LINE}</Text>
     }
