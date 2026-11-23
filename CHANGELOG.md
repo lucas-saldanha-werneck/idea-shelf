@@ -2,6 +2,9 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.4.1 (2026-11-22)
+- Fix: when side-stack loads late, the own pane no longer stays open as a separate tab. The host is looked for again at 5 s, 15 s and 60 s (stack-guest.tsx, byte-identical copy of side-stack 0.5.2); if the own pane renders while stacked it now closes itself.
+
 ## [0.4.0] - 2026-11-18
 - Each idea has one row of actions: Send (that idea), Edit, Delete (red). Send all N with two or more ideas.
 - In the Stack pane: an `Ideas · N` heading; an empty shelf folds to one line with + Park.

@@ -619,6 +619,31 @@ test('alone: own pane opens after start; nothing drawn in a stack (terminal and 
   expect(w.stackedFlag.includes(true)).toBe(false)
 })
 
+test('side-stack loading many seconds late still closes the own pane (checks up to a minute)', async ($, on) => {
+  const w = await start($, on)
+  await w.clock.advance(1500)
+  await settle()
+  expect(w.opened).toContain('idea-shelf')
+  expect(w.closed).toEqual([])
+  w.host.command = true
+  await w.clock.advance(20000)
+  await settle()
+  expect(w.closed).toContain('idea-shelf')
+})
+
+test('the own pane rendering while stacked closes itself from a timer', async ($, on) => {
+  const w = await start($, on)
+  await w.clock.advance(150)
+  await settle()
+  expect(w.opened).toContain('idea-shelf')
+  w.host.command = true
+  const ui = await $.ui.mount({ plugin: 'idea-shelf', surface: 'terminal', ...PANE })
+  await w.clock.advance(10)
+  await settle()
+  expect(w.closed).toContain('idea-shelf')
+  await ui.unmount()
+})
+
 test('a /stack command from another plugin does not count as side-stack', async ($, on) => {
   const w = await start($, on)
   w.host.foreign = true
